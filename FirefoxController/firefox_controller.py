@@ -1,0 +1,832 @@
+#!/usr/bin/env python3
+"""
+FirefoxController - A Python wrapper for Firefox Remote Debugging Protocol
+
+This module provides a Python interface to control Firefox using its remote debugging protocol,
+similar to how ChromeController works for Chrome/Chromium.
+
+Key differences from ChromeController:
+- Uses Firefox's actor-based protocol instead of Chrome's domain-based protocol
+- Different message format (Firefox uses "to"/"from" fields for actor routing)
+- Different default ports and startup flags
+- Different domain/method names and capabilities
+"""
+
+import json
+import logging
+import subprocess
+import time
+import uuid
+import websocket
+import distutils.spawn
+import tempfile
+import os
+import shutil
+import base64
+from typing import Optional, Dict, Any, List, Union
+from urllib.parse import urlparse
+
+try:
+    from websockets.sync.client import connect
+    WEBSOCKETS_AVAILABLE = True
+except ImportError:
+    WEBSOCKETS_AVAILABLE = False
+    connect = None
+
+
+class FirefoxControllerException(Exception):
+    """Base exception for FirefoxController errors"""
+    pass
+
+
+class FirefoxStartupException(FirefoxControllerException):
+    """Exception raised when Firefox fails to start"""
+    pass
+
+
+class FirefoxConnectFailure(FirefoxControllerException):
+    """Exception raised when connection to Firefox fails"""
+    pass
+
+
+class FirefoxCommunicationsError(FirefoxControllerException):
+    """Exception raised when communication with Firefox fails"""
+    pass
+
+
+class FirefoxTabNotFoundError(FirefoxControllerException):
+    """Exception raised when a tab is not found"""
+    pass
+
+
+class FirefoxError(FirefoxControllerException):
+    """General Firefox error"""
+    pass
+
+
+class FirefoxDiedError(FirefoxControllerException):
+    """Exception raised when Firefox process dies"""
+    pass
+
+
+class FirefoxNavigateTimedOut(FirefoxControllerException):
+    """Exception raised when navigation times out"""
+    pass
+
+
+class FirefoxResponseNotReceived(FirefoxControllerException):
+    """Exception raised when expected response is not received"""
+    pass
+
+
+class FirefoxExecutionManager:
+    """
+    Class for managing Firefox execution and remote debugging connection.
+    
+    This is similar to ChromeExecutionManager in ChromeController but adapted
+    for Firefox's remote debugging protocol using Marionette.
+    """
+    
+    def __init__(self,
+                 binary: str = "firefox",
+                 host: str = "localhost",
+                 port: int = 9222,
+                 websocket_timeout: int = 10,
+                 headless: bool = True,
+                 additional_options: List[str] = None,
+                 profile_dir: str = None):
+        """
+        Initialize Firefox execution manager.
+        
+        Args:
+            binary: Path to Firefox binary
+            host: Host to connect to
+            port: Debug port to use (2828 for Marionette)
+            websocket_timeout: WebSocket timeout in seconds
+            headless: Run Firefox in headless mode
+            additional_options: Additional command line options for Firefox
+            profile_dir: Custom profile directory (None for temporary profile)
+        """
+        self.binary = binary
+        self.host = host
+        self.port = port
+        self.websocket_timeout = websocket_timeout
+        self.headless = headless
+        self.additional_options = additional_options or []
+        self.profile_dir = profile_dir
+        self.process = None
+        self.ws = None
+        self.ws_connection = None
+        self.root_actor = None
+        self.log = logging.getLogger("FirefoxController.ExecutionManager")
+        
+        # Message ID counter
+        self.msg_id = 0
+        
+        # Track active tabs
+        self.tabs = {}
+        self.tab_id_map = {}
+        
+        # Track browsing context
+        self.browsing_context = None
+        self.user_context = None
+        
+        # Temporary profile directory
+        self.temp_profile = None
+        
+    def _create_profile(self) -> str:
+        """Create a temporary Firefox profile with required preferences"""
+        if self.profile_dir:
+            # Use provided profile directory
+            profile_path = self.profile_dir
+            if not os.path.exists(profile_path):
+                os.makedirs(profile_path)
+        else:
+            # Create temporary profile
+            self.temp_profile = tempfile.mkdtemp(prefix="firefox_controller_")
+            profile_path = self.temp_profile
+            
+        # Create prefs.js with required settings for Firefox remote debugging
+        # These are the critical settings that Firefox requires
+        prefs_content = """user_pref("devtools.debugger.remote-enabled", true);
+user_pref("devtools.chrome.enabled", true);
+user_pref("devtools.debugger.prompt-connection", false);
+user_pref("devtools.debugger.forbid-certified-apps", false);
+user_pref("devtools.remote.adb.extensionURL", "");
+user_pref("devtools.remote.wifi.enabled", true);
+user_pref("devtools.remote.usb.enabled", true);
+user_pref("devtools.remote.force-local", true);
+user_pref("devtools.debugger.force-local", true);
+user_pref("devtools.debugger.chrome-enabled", true);
+user_pref("devtools.debugger.remote-mode", true);
+user_pref("devtools.debugger.remote-port", 6000);
+user_pref("devtools.debugger.remote-host", "localhost");
+"""
+        
+        prefs_file = os.path.join(profile_path, "prefs.js")
+        with open(prefs_file, "w") as f:
+            f.write(prefs_content)
+            
+        return profile_path
+    
+    def start_firefox(self):
+        """Start Firefox with Marionette enabled"""
+        if not distutils.spawn.find_executable(self.binary):
+            raise FirefoxStartupException(f"Firefox binary not found: {self.binary}")
+        
+        # Create profile if needed
+        profile_path = self._create_profile()
+        
+        # Build command line
+        cmd = [self.binary]
+        
+        if self.headless:
+            cmd.extend(["--headless"])
+            
+        # Use the profile
+        cmd.extend(["--profile", profile_path])
+        
+        # Enable WebDriver BiDi (the modern standard)
+        cmd.extend([
+            "--remote-debugging-port", str(self.port),  # Start the Firefox Remote Agent
+            "--remote-allow-hosts", "localhost,127.0.0.1",  # Allow local connections
+            "--remote-allow-origins", "http://localhost,http://127.0.0.1",  # Allow local origins
+        ])
+        
+        # Add additional options
+        cmd.extend(self.additional_options)
+        
+        self.log.info(f"Starting Firefox with command: {' '.join(cmd)}")
+        self.log.info(f"Using profile: {profile_path}")
+        
+        try:
+            self.process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                preexec_fn=self._set_pdeathsig
+            )
+            
+            # Give Firefox more time to start
+            time.sleep(4)
+            
+            # Check if process is still running
+            if self.process.poll() is not None:
+                stderr = self.process.stderr.read().decode('utf-8') if self.process.stderr else ""
+                raise FirefoxStartupException(f"Firefox failed to start: {stderr}")
+                
+        except Exception as e:
+            raise FirefoxStartupException(f"Failed to start Firefox: {e}")
+    
+    def _set_pdeathsig(self):
+        """Set parent death signal to ensure Firefox dies when parent dies"""
+        import signal
+        import os
+        try:
+            # Set the child process to be killed when parent dies
+            if hasattr(signal, 'SIGTERM'):
+                import ctypes
+                libc = ctypes.CDLL("libc.so.6")
+                libc.prctl(1, signal.SIGTERM)
+        except:
+            pass  # Not critical if this fails
+    
+    def connect(self):
+        """Connect to Firefox remote debugging interface using WebDriver BiDi"""
+        if not self.process or self.process.poll() is not None:
+            raise FirefoxConnectFailure("Firefox process is not running")
+        
+        if not WEBSOCKETS_AVAILABLE:
+            raise FirefoxConnectFailure("websockets library not available. Please install with: pip install websockets")
+        
+        try:
+            # Give Firefox more time to start
+            time.sleep(3)
+            
+            # WebDriver BiDi uses a session-based WebSocket URL (based on working implementation)
+            ws_url = f"ws://127.0.0.1:{self.port}/session"
+            
+            self.log.info(f"Connecting to WebDriver BiDi WebSocket: {ws_url}")
+            
+            # Connect using websockets.sync.client (more reliable)
+            self.ws_connection = connect(ws_url)
+            
+            # Initialize the WebDriver BiDi connection
+            self._initialize_bidi_connection()
+            
+        except Exception as e:
+            raise FirefoxConnectFailure(f"Connection failed: {e}")
+    
+    def _initialize_bidi_connection(self):
+        """Initialize WebDriver BiDi connection (based on working implementation)"""
+        try:
+            # Initiate the session (based on working implementation)
+            session_id = self._send_message({
+                'method': 'session.new',
+                'params': {
+                    'capabilities': {}
+                }
+            })['result']['sessionId']
+            
+            self.session_id = session_id
+            self.root_actor = "bidi"
+            self.log.info(f"Connected to WebDriver BiDi session: {session_id}")
+            
+            # Subscribe to browser events
+            self._send_message({
+                'method': 'session.subscribe',
+                'params': {
+                    'events': [
+                        'browsingContext.domContentLoaded',
+                    ]
+                }
+            })
+            
+            # Create the browsing context
+            user_context = self._send_message({
+                'method': 'browser.createUserContext',
+                'params': {}
+            })['result']['userContext']
+            
+            self.user_context = user_context
+            
+            # Create browsing context and handle the event response
+            create_response = self._send_message({
+                'method': 'browsingContext.create',
+                'params': {
+                    'type': 'tab',
+                    'userContext': user_context
+                }
+            })
+            
+            # The response might be an event or a result
+            if create_response.get('type') == 'event' and create_response.get('method') == 'browsingContext.domContentLoaded':
+                self.browsing_context = create_response['params']['context']
+            elif create_response.get('type') == 'success' and 'result' in create_response and 'context' in create_response['result']:
+                self.browsing_context = create_response['result']['context']
+            else:
+                # If we get an event but not the right one, listen for the correct event
+                event = self._receive_event('browsingContext.domContentLoaded', {
+                    'userContext': user_context
+                }, timeout=5)
+                if event:
+                    self.browsing_context = event['params']['context']
+                else:
+                    raise FirefoxCommunicationsError("Failed to create browsing context")
+            
+            self.log.info(f"Created browsing context: {self.browsing_context}")
+            
+            # Get the list of browsing contexts (tabs/windows)
+            self._list_browsing_contexts()
+            
+        except Exception as e:
+            self.log.warning(f"WebDriver BiDi initialization failed: {e}")
+            raise FirefoxCommunicationsError(f"Failed to initialize WebDriver BiDi connection: {e}")
+    
+    def _send_message(self, message: Dict[str, Any]) -> Dict[str, Any]:
+        """Send a message to Firefox and wait for response"""
+        if not self.ws_connection:
+            raise FirefoxCommunicationsError("WebSocket not connected")
+        
+        try:
+            # Always assign a new message ID to avoid collisions
+            self.msg_id += 1
+            message["id"] = self.msg_id
+            
+            expected_id = message["id"]
+            
+            message_str = json.dumps(message)
+            self.log.debug(f"Sending message: {message_str}")
+            
+            self.ws_connection.send(message_str)
+            
+            # Wait for response with matching ID
+            timeout = 10
+            start_time = time.time()
+            
+            while time.time() - start_time < timeout:
+                response_str = self.ws_connection.recv()
+                self.log.debug(f"Received response: {response_str}")
+                
+                response = json.loads(response_str)
+                
+                # Check if this is the response we're waiting for
+                if response.get("id") == expected_id:
+                    # Check for errors
+                    if "error" in response:
+                        error_msg = response.get("message", "Unknown error")
+                        if isinstance(error_msg, dict):
+                            error_msg = str(error_msg)
+                        raise FirefoxError(f"Firefox error: {error_msg}")
+                    elif response.get("type") == "error":
+                        error_msg = response.get("message", "Unknown error")
+                        raise FirefoxError(f"Firefox error: {error_msg}")
+                    
+                    return response
+                
+                # If this is an event or a response for a different message, continue waiting
+                if response.get("type") == "event":
+                    continue
+                
+                # If this is a response for a different message, we might want to handle it
+                # For now, just continue waiting for our response
+                
+            
+            raise FirefoxCommunicationsError(f"Timeout waiting for response with ID {expected_id}")
+            
+        except Exception as e:
+            raise FirefoxCommunicationsError(f"Failed to send message: {e}")
+    
+    def _receive_event(self, event_type: str, params: dict, timeout: int = 5) -> Optional[Dict[str, Any]]:
+        """Receive a specific event from the WebSocket"""
+        try:
+            start_time = time.time()
+            while time.time() - start_time < timeout:
+                response_str = self.ws_connection.recv()
+                response = json.loads(response_str)
+                
+                # Check if this is the event we're looking for
+                if (response.get("method") == event_type and
+                    self._dictionaries_match(params, response.get("params", {}), False)):
+                    return response
+                
+                # If it's an error, raise it
+                if response.get("type") == "error":
+                    error_msg = response.get("message", "Unknown error")
+                    raise FirefoxError(f"Firefox error: {error_msg}")
+                
+                # If it's a response to a previous message, handle it
+                if "id" in response:
+                    # This is a response to a previous request, not an event
+                    # We should probably handle this better in a real implementation
+                    continue
+                    
+            return None
+            
+        except Exception as e:
+            self.log.debug(f"Error receiving event: {e}")
+            return None
+    
+    def _dictionaries_match(self, pattern: dict, data: dict, required: bool) -> bool:
+        """Check if two dictionaries match (helper for event matching)"""
+        for key in pattern:
+            if required and key not in data:
+                return False
+            
+            if key in data:
+                # Equal values, up to slashes
+                if isinstance(pattern[key], dict):
+                    if not self._dictionaries_match(pattern[key], data[key], required):
+                        return False
+                elif str(data[key]).replace('/', '') != str(pattern[key]).replace('/', ''):
+                    return False
+        return True
+    
+    def _list_browsing_contexts(self):
+        """List available browsing contexts (tabs/windows) using WebDriver BiDi"""
+        try:
+            message = {
+                "id": self.msg_id + 1,
+                "method": "browsingContext.getTree",
+                "params": {
+                    "maxDepth": 0,
+                    "root": None
+                }
+            }
+            
+            response = self._send_message(message)
+            
+            try:
+                self.log.debug(f"Parsing response: {response}")
+                
+                # Check if we have the expected structure
+                if not isinstance(response, dict):
+                    self.log.warning(f"Response is not a dict: {type(response)}")
+                    return []
+                
+                if response.get("type") != "success":
+                    self.log.warning(f"Response type is not success: {response.get('type')}")
+                    return []
+                
+                if "result" not in response:
+                    self.log.warning("Response has no 'result' field")
+                    return []
+                
+                if "contexts" not in response["result"]:
+                    self.log.warning("Response result has no 'contexts' field")
+                    return []
+                
+                contexts = response["result"]["contexts"]
+                if not isinstance(contexts, list):
+                    self.log.warning(f"Contexts is not a list: {type(contexts)}")
+                    return []
+                
+                self.tabs = {}
+                self.tab_id_map = {}
+                
+                for i, context in enumerate(contexts):
+                    self.log.debug(f"Processing context {i}: {context}")
+                    
+                    # WebDriver BiDi doesn't have a "type" field, so we check for tab-like contexts
+                    # Use .get() to safely access fields
+                    if not isinstance(context, dict):
+                        self.log.warning(f"Context {i} is not a dict: {type(context)}")
+                        continue
+                    
+                    tab_info = {
+                        "actor": context.get("context", ""),
+                        "title": context.get("title", ""),
+                        "url": context.get("url", ""),
+                        "type": "tab"
+                    }
+                    
+                    self.log.debug(f"Tab info: {tab_info}")
+                    
+                    if tab_info["actor"]:  # Only add if we have a valid context
+                        self.tabs[tab_info["actor"]] = tab_info
+                        self.tab_id_map[tab_info["actor"]] = tab_info
+                
+                self.log.info(f"Found {len(self.tabs)} tabs")
+                return list(self.tabs.values())
+                
+            except Exception as e:
+                self.log.warning(f"Error parsing browsing contexts: {e}")
+                self.log.warning(f"Response was: {response}")
+                import traceback
+                self.log.warning(f"Traceback: {traceback.format_exc()}")
+                return []
+                
+        except Exception as e:
+            self.log.warning(f"Failed to list browsing contexts: {e}")
+            return []
+    
+    def list_tabs(self) -> List[Dict[str, Any]]:
+        """List available tabs using WebDriver BiDi"""
+        if hasattr(self, 'tabs') and self.tabs:
+            return list(self.tabs.values())
+        else:
+            return self._list_browsing_contexts()
+    
+    def get_tab(self, tab_id: str) -> Dict[str, Any]:
+        """Get information about a specific tab"""
+        if tab_id not in self.tabs:
+            # Try to find the tab
+            tabs = self.list_tabs()
+            for tab in tabs:
+                if tab.get("actor") == tab_id:
+                    self.tabs[tab_id] = tab
+                    return tab
+            
+            raise FirefoxTabNotFoundError(f"Tab {tab_id} not found")
+        
+        return self.tabs[tab_id]
+    
+    def navigate(self, url: str, timeout: int = 30) -> Dict[str, Any]:
+        """Navigate the current browsing context to a URL using WebDriver BiDi"""
+        try:
+            if not self.browsing_context:
+                raise FirefoxError("No browsing context available")
+            
+            # Navigate using WebDriver BiDi
+            navigation = self._send_message({
+                'method': 'browsingContext.navigate',
+                'params': {
+                    'url': url,
+                    'context': self.browsing_context
+                }
+            })['result']['navigation']
+            
+            # Wait for the DOM to load
+            start_time = time.time()
+            while time.time() - start_time < timeout:
+                try:
+                    # Listen for domContentLoaded event
+                    event = self._receive_event('browsingContext.domContentLoaded', {
+                        'url': url,
+                        'context': self.browsing_context,
+                        'navigation': navigation,
+                    })
+                    
+                    if event:
+                        return {"status": "success", "url": url, "navigation": navigation}
+                    
+                    time.sleep(0.1)
+                    
+                except Exception as e:
+                    self.log.debug(f"Event listening error: {e}")
+                    break
+            
+            return {"status": "success", "url": url, "navigation": navigation}
+            
+        except Exception as e:
+            raise FirefoxNavigateTimedOut(f"Navigation to {url} timed out: {e}")
+    
+    def close(self):
+        """Close connection and stop Firefox"""
+        try:
+            if self.ws_connection:
+                # End the WebDriver BiDi session properly
+                try:
+                    self._send_message({
+                        'method': 'session.end',
+                        'params': {},
+                    })
+                except:
+                    pass
+                self.ws_connection.close()
+        except:
+            pass
+        
+        try:
+            if self.process and self.process.poll() is None:
+                self.process.terminate()
+                self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+        except:
+            pass
+        
+        # Clean up temporary profile
+        try:
+            if self.temp_profile and os.path.exists(self.temp_profile):
+                shutil.rmtree(self.temp_profile)
+                self.log.debug(f"Cleaned up temporary profile: {self.temp_profile}")
+        except:
+            pass
+        
+        self.ws_connection = None
+        self.process = None
+        self.tabs = {}
+        self.tab_id_map = {}
+        self.browsing_context = None
+        self.user_context = None
+        self.temp_profile = None
+    
+    def __enter__(self):
+        """Context manager entry"""
+        self.start_firefox()
+        self.connect()
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit"""
+        self.close()
+
+
+class FirefoxRemoteDebugInterface:
+    """
+    High-level interface for Firefox remote debugging.
+    
+    This class provides a more convenient interface similar to ChromeController's
+    ChromeRemoteDebugInterface, but adapted for Firefox's protocol.
+    """
+    
+    def __init__(self,
+                 binary: str = "firefox",
+                 host: str = "localhost", 
+                 port: int = 6000,
+                 headless: bool = False,
+                 additional_options: List[str] = None,
+                 profile_dir: str = None):
+        """
+        Initialize Firefox remote debug interface.
+        
+        Args:
+            binary: Path to Firefox binary
+            host: Host to connect to
+            port: Debug port to use
+            headless: Run Firefox in headless mode
+            additional_options: Additional command line options
+            profile_dir: Custom profile directory (None for temporary profile)
+        """
+        self.manager = FirefoxExecutionManager(
+            binary=binary,
+            host=host,
+            port=port,
+            headless=headless,
+            additional_options=additional_options,
+            profile_dir=profile_dir
+        )
+        self.log = logging.getLogger("FirefoxController.RemoteDebugInterface")
+    
+    def __enter__(self):
+        """Context manager entry"""
+        self.manager.__enter__()
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit"""
+        return self.manager.__exit__(exc_type, exc_val, exc_tb)
+    
+    def blocking_navigate_and_get_source(self, url: str, timeout: int = 30) -> str:
+        """
+        Navigate to a URL and get the page source (blocking).
+        
+        This is similar to ChromeController's blocking_navigate_and_get_source.
+        """
+        # Navigate to URL using WebDriver BiDi
+        self.manager.navigate(url, timeout)
+        
+        # Get page source
+        return self.get_page_source()
+    
+    def get_page_source(self) -> str:
+        """Get the page source for the current browsing context"""
+        try:
+            if not self.manager.browsing_context:
+                raise FirefoxError("No browsing context available")
+            
+            # Get page source using WebDriver BiDi
+            # Note: WebDriver BiDi doesn't have a direct getDOM command, so we use executeScript
+            response = self.manager._send_message({
+                'method': 'script.evaluate',
+                'params': {
+                    'expression': 'document.documentElement.outerHTML',
+                    'target': {'context': self.manager.browsing_context},
+                    'awaitPromise': False
+                }
+            })
+            
+            if "result" in response and "value" in response["result"]:
+                return str(response["result"]["value"])
+            else:
+                return ""
+                
+        except Exception as e:
+            self.log.warning(f"Failed to get page source: {e}")
+            return ""
+    
+    def get_current_url(self) -> str:
+        """Get the current URL for the browsing context"""
+        try:
+            if not self.manager.browsing_context:
+                raise FirefoxError("No browsing context available")
+            
+            # Get current URL using WebDriver BiDi
+            response = self.manager._send_message({
+                'method': 'browsingContext.getCurrentURL',
+                'params': {
+                    'context': self.manager.browsing_context
+                }
+            })
+            
+            if "result" in response and "url" in response["result"]:
+                return response["result"]["url"]
+            else:
+                return ""
+                
+        except Exception as e:
+            self.log.warning(f"Failed to get current URL: {e}")
+            return ""
+    
+    def get_page_url_title(self) -> tuple:
+        """Get page URL and title for the current browsing context"""
+        url = self.get_current_url()
+        
+        try:
+            # Get title using WebDriver BiDi
+            response = self.manager._send_message({
+                'method': 'script.evaluate',
+                'params': {
+                    'expression': 'document.title',
+                    'target': {'context': self.manager.browsing_context},
+                    'awaitPromise': False
+                }
+            })
+            
+            if "result" in response and "value" in response["result"]:
+                title = str(response["result"]["value"])
+            else:
+                title = ""
+                
+        except Exception as e:
+            self.log.warning(f"Failed to get page title: {e}")
+            title = ""
+        
+        return title, url
+    
+    def take_screenshot(self, format: str = "png") -> bytes:
+        """Take a screenshot of the current browsing context"""
+        try:
+            if not self.manager.browsing_context:
+                raise FirefoxError("No browsing context available")
+            
+            # Take screenshot using WebDriver BiDi
+            response = self.manager._send_message({
+                'method': 'browsingContext.captureScreenshot',
+                'params': {
+                    'context': self.manager.browsing_context,
+                    'format': format
+                }
+            })
+            
+            if "result" in response and "data" in response["result"]:
+                return base64.b64decode(response["result"]["data"])
+            else:
+                return b""
+                
+        except Exception as e:
+            self.log.warning(f"Failed to take screenshot: {e}")
+            return b""
+
+
+def setup_logging(verbose: bool = False):
+    """Setup logging for FirefoxController"""
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    logger = logging.getLogger("FirefoxController")
+    return logger
+
+
+# Main CLI interface similar to ChromeController
+def main():
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="FirefoxController - Remote control Firefox")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
+    parser.add_argument("--silent", "-s", action="store_true", help="Silent mode")
+    parser.add_argument("--binary", default="firefox", help="Firefox binary path")
+    parser.add_argument("--port", type=int, default=6000, help="Debug port")
+    parser.add_argument("--headless", action="store_true", help="Run in headless mode")
+    
+    subparsers = parser.add_subparsers(dest="command")
+    
+    # Fetch command
+    fetch_parser = subparsers.add_parser("fetch", help="Fetch a URL")
+    fetch_parser.add_argument("url", help="URL to fetch")
+    fetch_parser.add_argument("--outfile", help="Output file")
+    
+    # Version command
+    subparsers.add_parser("version", help="Show version")
+    
+    args = parser.parse_args()
+    
+    if args.command == "version":
+        print("FirefoxController v0.1")
+        return
+    
+    elif args.command == "fetch":
+        setup_logging(args.verbose)
+        
+        with FirefoxRemoteDebugInterface(
+            binary=args.binary,
+            port=args.port,
+            headless=args.headless
+        ) as firefox:
+            
+            source = firefox.blocking_navigate_and_get_source(args.url)
+            
+            if args.outfile:
+                with open(args.outfile, "w", encoding="utf-8") as f:
+                    f.write(source)
+            else:
+                print(source)
+    
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()
