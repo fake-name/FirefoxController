@@ -38,24 +38,24 @@ def test_javascript_execution():
             
             # Test execute_javascript_statement
             result = firefox.execute_javascript_statement("1 + 1")
-            logger.info(f"JavaScript statement result: {result}")
-            assert result == 2, f"Expected 2, got {result}"
+            logger.info("JavaScript statement result: {}".format(result))
+            assert result == 2, "Expected 2, got {}".format(result)
             
             # Test execute_javascript_statement with variable
             result = firefox.execute_javascript_statement("document.title")
-            logger.info(f"Document title: {result}")
+            logger.info("Document title: {}".format(result))
             assert result is not None, "Document title should not be None"
             
             # Test execute_javascript_function
             func = "function test(a, b) { return a + b; }"
             result = firefox.execute_javascript_function(func, [3, 5])
-            logger.info(f"JavaScript function result: {result}")
-            assert result == 8, f"Expected 8, got {result}"
+            logger.info("JavaScript function result: {}".format(result))
+            assert result == 8, "Expected 8, got {}".format(result)
             
             # Test calling a function defined in the page
             result = firefox.execute_javascript_statement("testFunction(10, 20)")
-            logger.info(f"Page function result: {result}")
-            assert result == 30, f"Expected 30, got {result}"
+            logger.info("Page function result: {}".format(result))
+            assert result == 30, "Expected 30, got {}".format(result)
             
             logger.info("JavaScript execution tests completed successfully")
     
@@ -81,7 +81,7 @@ def test_navigation_functions():
             
             # Test navigate_to (JS-based navigation)
             success = firefox.navigate_to(test_server.get_url("/simple"))
-            logger.info(f"navigate_to result: {success}")
+            logger.info("navigate_to result: {}".format(success))
             assert success, "navigate_to should return True"
             
             # Wait for navigation to complete
@@ -89,13 +89,13 @@ def test_navigation_functions():
             
             # Test blocking_navigate
             success = firefox.blocking_navigate(test_server.get_url("/javascript"), timeout=10)
-            logger.info(f"blocking_navigate result: {success}")
+            logger.info("blocking_navigate result: {}".format(success))
             assert success, "blocking_navigate should return True"
             
             # Verify we're on the right page
             current_url = firefox.get_current_url()
-            logger.info(f"Current URL after blocking_navigate: {current_url}")
-            assert "javascript" in current_url.lower(), f"Expected javascript in URL, got {current_url}"
+            logger.info("Current URL after blocking_navigate: {}".format(current_url))
+            assert "javascript" in current_url.lower(), "Expected javascript in URL, got {}".format(current_url)
             
             logger.info("Navigation function tests completed successfully")
     
@@ -124,7 +124,7 @@ def test_cookie_management():
             
             # Test get_cookies
             cookies = firefox.get_cookies()
-            logger.info(f"Found {len(cookies)} cookies")
+            logger.info("Found {} cookies".format(len(cookies)))
             assert isinstance(cookies, list), "get_cookies should return a list"
             
             # Test setting a cookie via navigation to cookie endpoint
@@ -132,7 +132,7 @@ def test_cookie_management():
             
             # Test get_cookies again to verify cookie was set
             cookies_after = firefox.get_cookies()
-            logger.info(f"Found {len(cookies_after)} cookies after setting")
+            logger.info("Found {} cookies after setting".format(len(cookies_after)))
             
             # Test set_cookie directly
             test_cookie = {
@@ -145,17 +145,17 @@ def test_cookie_management():
                 "sameSite": "lax"
             }
             success = firefox.set_cookie(test_cookie)
-            logger.info(f"set_cookie result: {success}")
+            logger.info("set_cookie result: {}".format(success))
             assert success, "set_cookie should return True"
             
             # Test clear_cookies
             success = firefox.clear_cookies()
-            logger.info(f"clear_cookies result: {success}")
+            logger.info("clear_cookies result: {}".format(success))
             assert success, "clear_cookies should return True"
             
             # Verify cookies were cleared
             cookies_cleared = firefox.get_cookies()
-            logger.info(f"Found {len(cookies_cleared)} cookies after clearing")
+            logger.info("Found {} cookies after clearing".format(len(cookies_cleared)))
             
             logger.info("Cookie management tests completed successfully")
     
@@ -184,31 +184,31 @@ def test_dom_interaction():
             
             # Test find_element
             element = firefox.find_element("h1")
-            logger.info(f"Found element: {element}")
+            logger.info("Found element: {}".format(element))
             if element:
                 assert element["found"], "Element should be found"
-                logger.info(f"Element tag: {element.get('tagName')}")
+                logger.info("Element tag: {}".format(element.get('tagName')))
             
             # Test find_element by class
             element = firefox.find_element(".test-paragraph")
-            logger.info(f"Found element by class: {element}")
+            logger.info("Found element by class: {}".format(element))
             
             # Test find_element by ID
             element = firefox.find_element("#test-link")
-            logger.info(f"Found element by ID: {element}")
+            logger.info("Found element by ID: {}".format(element))
             
             # Test click_element (may not have clickable elements on example.com)
             # This is just to test the function works, not that it actually clicks something
             success = firefox.click_element("body")
-            logger.info(f"click_element result: {success}")
+            logger.info("click_element result: {}".format(success))
             
             # Test click_link_containing_url
             success = firefox.click_link_containing_url("simple")
-            logger.info(f"click_link_containing_url result: {success}")
+            logger.info("click_link_containing_url result: {}".format(success))
             
             # Test scroll_page
             success = firefox.scroll_page(100)  # Scroll down 100 pixels
-            logger.info(f"scroll_page result: {success}")
+            logger.info("scroll_page result: {}".format(success))
             assert success, "scroll_page should return True"
             
             logger.info("DOM interaction tests completed successfully")
@@ -238,16 +238,16 @@ def test_advanced_features():
             
             # Test wait_for_dom_idle (with short timeout for testing)
             success = firefox.wait_for_dom_idle(dom_idle_requirement_secs=1, max_wait_timeout=5)
-            logger.info(f"wait_for_dom_idle result: {success}")
+            logger.info("wait_for_dom_idle result: {}".format(success))
             
             # Test get_rendered_page_source
             source = firefox.get_rendered_page_source(dom_idle_requirement_secs=1, max_wait_timeout=5)
-            logger.info(f"get_rendered_page_source length: {len(source)}")
+            logger.info("get_rendered_page_source length: {}".format(len(source)))
             assert len(source) > 0, "Rendered page source should not be empty"
             
             # Test new_tab
             new_tab_interface = firefox.new_tab(test_server.get_url("/javascript"))
-            logger.info(f"new_tab result: {new_tab_interface}")
+            logger.info("new_tab result: {}".format(new_tab_interface))
             assert new_tab_interface is not None, "new_tab should return a valid interface instance"
             assert hasattr(new_tab_interface, 'active_browsing_context'), "new_tab should return an interface with active_browsing_context"
             

@@ -41,22 +41,22 @@ def test_basic_functionality():
             
             # Test listing tabs
             tabs = firefox.manager.list_tabs()
-            logger.info(f"Found {len(tabs)} tabs")
+            logger.info("Found {} tabs".format(len(tabs)))
             
             if tabs:
                 tab_id = tabs[0]["actor"]
-                logger.info(f"Using tab: {tab_id}")
+                logger.info("Using tab: {}".format(tab_id))
                 
                 # Test navigation to local test server
                 source = firefox.blocking_navigate_and_get_source(test_server.get_url("/simple"), timeout=10)
-                logger.info(f"Successfully navigated and got {len(source)} characters of source")
+                logger.info("Successfully navigated and got {} characters of source".format(len(source)))
                 
                 # Verify we got the expected content
                 assert "Simple Test Page" in source, "Expected content not found in page source"
                 
                 # Test getting URL and title
                 title, url = firefox.get_page_url_title()
-                logger.info(f"Title: {title}, URL: {url}")
+                logger.info("Title: {}, URL: {}".format(title, url))
             
             logger.info("Basic functionality test completed successfully")
     
@@ -82,24 +82,24 @@ def test_navigation_and_screenshot():
             
             # Test navigation
             source = firefox.blocking_navigate_and_get_source(test_server.get_url("/simple"), timeout=15)
-            logger.info(f"Successfully navigated ({len(source)} characters)")
+            logger.info("Successfully navigated ({} characters)".format(len(source)))
             
             # Test get_page_source
             source2 = firefox.get_page_source()
-            logger.info(f"get_page_source() returned {len(source2)} characters")
+            logger.info("get_page_source() returned {} characters".format(len(source2)))
             
             # Test get_current_url
             current_url = firefox.get_current_url()
-            logger.info(f"Current URL: {current_url}")
+            logger.info("Current URL: {}".format(current_url))
             
             # Test get_page_url_title
             title, page_url = firefox.get_page_url_title()
-            logger.info(f"Title: '{title}', URL: {page_url}")
+            logger.info("Title: '{}', URL: {}".format(title, page_url))
             
             # Test screenshot
             screenshot = firefox.take_screenshot(format="png")
             assert len(screenshot) > 0, "Screenshot was empty"
-            logger.info(f"Successfully took screenshot ({len(screenshot)} bytes)")
+            logger.info("Successfully took screenshot ({} bytes)".format(len(screenshot)))
             
             logger.info("Navigation and screenshot test completed successfully")
     
@@ -120,7 +120,7 @@ def test_custom_profile():
         
         # Create a temporary profile directory
         with tempfile.TemporaryDirectory() as temp_profile_dir:
-            logger.info(f"Using temporary profile: {temp_profile_dir}")
+            logger.info("Using temporary profile: {}".format(temp_profile_dir))
         
         with FirefoxController.FirefoxRemoteDebugInterface(
             headless=False,
@@ -130,11 +130,11 @@ def test_custom_profile():
             
             # Test basic functionality with custom profile
             tabs = firefox.manager.list_tabs()
-            logger.info(f"Found {len(tabs)} tabs with custom profile")
+            logger.info("Found {} tabs with custom profile".format(len(tabs)))
             
             # Test navigation
             source = firefox.blocking_navigate_and_get_source(test_server.get_url("/simple"), timeout=15)
-            logger.info(f"Successfully navigated with custom profile ({len(source)} chars)")
+            logger.info("Successfully navigated with custom profile ({} chars)".format(len(source)))
             
             logger.info("Custom profile test completed successfully")
     

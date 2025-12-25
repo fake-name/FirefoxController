@@ -112,7 +112,7 @@ class FirefoxRemoteDebugInterface:
                 return ""
                 
         except Exception as e:
-            self.log.warning(f"Failed to get page source: {e}")
+            self.log.warning("Failed to get page source: {}".format(e))
             return ""
     
     def get_current_url(self) -> str:
@@ -173,7 +173,7 @@ class FirefoxRemoteDebugInterface:
             return ""
                 
         except Exception as e:
-            self.log.warning(f"Failed to get current URL: {e}")
+            self.log.warning("Failed to get current URL: {}".format(e))
             return ""
     
     def get_page_url_title(self) -> tuple:
@@ -203,7 +203,7 @@ class FirefoxRemoteDebugInterface:
                 title = ""
                 
         except Exception as e:
-            self.log.warning(f"Failed to get page title: {e}")
+            self.log.warning("Failed to get page title: {}".format(e))
             title = ""
         
         return title, url
@@ -231,7 +231,7 @@ class FirefoxRemoteDebugInterface:
                 return b""
                 
         except Exception as e:
-            self.log.warning(f"Failed to take screenshot: {e}")
+            self.log.warning("Failed to take screenshot: {}".format(e))
             return b""
     
     def __exec_js(self, script: str, should_call: bool = False, args: list = None, await_promise: bool = False) -> Any:
@@ -258,7 +258,7 @@ class FirefoxRemoteDebugInterface:
                 if args is None:
                     args = []
                 # Create a function call expression
-                call_expr = f"({script}).apply(null, {json.dumps(args)})"
+                call_expr = "({}).apply(null, {})".format(script, json.dumps(args))
                 response = self.manager._send_message({
                     'method': 'script.evaluate',
                     'params': {
@@ -315,7 +315,7 @@ class FirefoxRemoteDebugInterface:
             return None
                 
         except Exception as e:
-            self.log.warning(f"Failed to execute JavaScript: {e}")
+            self.log.warning("Failed to execute JavaScript: {}".format(e))
             return None
     
     def execute_javascript_statement(self, script: str) -> Any:
@@ -358,14 +358,14 @@ class FirefoxRemoteDebugInterface:
         try:
             if "'" in url:
                 # Use double quotes if URL contains single quotes
-                script = f'window.location.href = "{url}"'
+                script = 'window.location.href = "{}"'.format(url)
             else:
-                script = f"window.location.href = '{url}'"
+                script = "window.location.href = '{}'".format(url)
             
             result = self.execute_javascript_statement(script)
             return True
         except Exception as e:
-            self.log.warning(f"Failed to navigate via JavaScript: {e}")
+            self.log.warning("Failed to navigate via JavaScript: {}".format(e))
             return False
     
     def blocking_navigate(self, url: str, timeout: int = 30) -> bool:
@@ -384,7 +384,7 @@ class FirefoxRemoteDebugInterface:
             result = self.manager.navigate(url, timeout)
             return result.get("status") == "success"
         except Exception as e:
-            self.log.warning(f"Blocking navigation failed: {e}")
+            self.log.warning("Blocking navigation failed: {}".format(e))
             return False
     
     def get_cookies(self) -> List[Dict[str, Any]]:
@@ -424,7 +424,7 @@ class FirefoxRemoteDebugInterface:
                 return []
                 
         except Exception as e:
-            self.log.warning(f"Failed to get cookies: {e}")
+            self.log.warning("Failed to get cookies: {}".format(e))
             return []
     
     def set_cookie(self, cookie: Dict[str, Any]) -> bool:
@@ -450,23 +450,23 @@ class FirefoxRemoteDebugInterface:
             secure = cookie.get("secure", False)
             
             # Build cookie string
-            cookie_str = f"{name}={value}"
+            cookie_str = "{}={}".format(name, value)
             if domain:
-                cookie_str += f"; domain={domain}"
+                cookie_str += "; domain={}".format(domain)
             if path:
-                cookie_str += f"; path={path}"
+                cookie_str += "; path={}".format(path)
             if expires:
-                cookie_str += f"; expires={expires}"
+                cookie_str += "; expires={}".format(expires)
             if secure:
                 cookie_str += "; secure"
             
-            script = f"document.cookie = '{cookie_str}'"
+            script = "document.cookie = '{}'".format(cookie_str)
             result = self.execute_javascript_statement(script)
             
             return True
                 
         except Exception as e:
-            self.log.warning(f"Failed to set cookie: {e}")
+            self.log.warning("Failed to set cookie: {}".format(e))
             return False
     
     def clear_cookies(self) -> bool:
@@ -507,7 +507,7 @@ class FirefoxRemoteDebugInterface:
             return bool(result)
                 
         except Exception as e:
-            self.log.warning(f"Failed to clear cookies: {e}")
+            self.log.warning("Failed to clear cookies: {}".format(e))
             return False
     
     def find_element(self, search: str) -> Optional[Dict[str, Any]]:
@@ -573,7 +573,7 @@ class FirefoxRemoteDebugInterface:
                 return None
                 
         except Exception as e:
-            self.log.warning(f"Failed to find element: {e}")
+            self.log.warning("Failed to find element: {}".format(e))
             return None
     
     def click_element(self, selector: str) -> bool:
@@ -606,7 +606,7 @@ class FirefoxRemoteDebugInterface:
             return bool(result)
                 
         except Exception as e:
-            self.log.warning(f"Failed to click element: {e}")
+            self.log.warning("Failed to click element: {}".format(e))
             return False
     
     def click_link_containing_url(self, url: str) -> bool:
@@ -639,7 +639,7 @@ class FirefoxRemoteDebugInterface:
             return bool(result)
                 
         except Exception as e:
-            self.log.warning(f"Failed to click link containing URL: {e}")
+            self.log.warning("Failed to click link containing URL: {}".format(e))
             return False
     
     def scroll_page(self, scroll_y_delta: int, scroll_x_delta: int = 0, mouse_pos_x: int = 10, mouse_pos_y: int = 10) -> bool:
@@ -671,7 +671,7 @@ class FirefoxRemoteDebugInterface:
             return bool(result)
                 
         except Exception as e:
-            self.log.warning(f"Failed to scroll page: {e}")
+            self.log.warning("Failed to scroll page: {}".format(e))
             return False
     
     def get_rendered_page_source(self, dom_idle_requirement_secs: int = 3, max_wait_timeout: int = 30) -> str:
@@ -693,7 +693,7 @@ class FirefoxRemoteDebugInterface:
             return self.get_page_source()
                 
         except Exception as e:
-            self.log.warning(f"Failed to get rendered page source: {e}")
+            self.log.warning("Failed to get rendered page source: {}".format(e))
             return ""
     
     def wait_for_dom_idle(self, dom_idle_requirement_secs: int = 3, max_wait_timeout: int = 30) -> bool:
@@ -745,7 +745,7 @@ class FirefoxRemoteDebugInterface:
             return False  # Timeout occurred
                 
         except Exception as e:
-            self.log.warning(f"Failed to wait for DOM idle: {e}")
+            self.log.warning("Failed to wait for DOM idle: {}".format(e))
             return False
     
     def new_tab(self, url: str = "about:blank") -> 'FirefoxRemoteDebugInterface':

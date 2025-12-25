@@ -134,7 +134,7 @@ user_pref("devtools.debugger.remote-host", "localhost");
     def start_firefox(self):
         """Start Firefox with Marionette enabled"""
         if not distutils.spawn.find_executable(self.binary):
-            raise FirefoxStartupException(f"Firefox binary not found: {self.binary}")
+            raise FirefoxStartupException("Firefox binary not found: {}".format(self.binary))
         
         # Create profile if needed
         profile_path = self._create_profile()
@@ -158,8 +158,8 @@ user_pref("devtools.debugger.remote-host", "localhost");
         # Add additional options
         cmd.extend(self.additional_options)
         
-        self.log.info(f"Starting Firefox with command: {' '.join(cmd)}")
-        self.log.info(f"Using profile: {profile_path}")
+        self.log.info("Starting Firefox with command: {}".format(' '.join(cmd)))
+        self.log.info("Using profile: {}".format(profile_path))
         
         try:
             self.process = subprocess.Popen(
@@ -175,10 +175,10 @@ user_pref("devtools.debugger.remote-host", "localhost");
             # Check if process is still running
             if self.process.poll() is not None:
                 stderr = self.process.stderr.read().decode('utf-8') if self.process.stderr else ""
-                raise FirefoxStartupException(f"Firefox failed to start: {stderr}")
+                raise FirefoxStartupException("Firefox failed to start: {}".format(stderr))
                 
         except Exception as e:
-            raise FirefoxStartupException(f"Failed to start Firefox: {e}")
+            raise FirefoxStartupException("Failed to start Firefox: {}".format(e))
     
     def _set_pdeathsig(self):
         """Set parent death signal to ensure Firefox dies when parent dies"""
@@ -206,9 +206,9 @@ user_pref("devtools.debugger.remote-host", "localhost");
             time.sleep(3)
             
             # WebDriver BiDi uses a session-based WebSocket URL (based on working implementation)
-            ws_url = f"ws://127.0.0.1:{self.port}/session"
+            ws_url = "ws://127.0.0.1:{}/session".format(self.port)
             
-            self.log.info(f"Connecting to WebDriver BiDi WebSocket: {ws_url}")
+            self.log.info("Connecting to WebDriver BiDi WebSocket: {}".format(ws_url))
             
             # Connect using websockets.sync.client (more reliable)
             self.ws_connection = connect(ws_url)
@@ -217,7 +217,7 @@ user_pref("devtools.debugger.remote-host", "localhost");
             self._initialize_bidi_connection()
             
         except Exception as e:
-            raise FirefoxConnectFailure(f"Connection failed: {e}")
+            raise FirefoxConnectFailure("Connection failed: {}".format(e))
     
     def _initialize_bidi_connection(self):
         """Initialize WebDriver BiDi connection (based on working implementation)"""
@@ -232,7 +232,7 @@ user_pref("devtools.debugger.remote-host", "localhost");
             
             self.session_id = session_id
             self.root_actor = "bidi"
-            self.log.info(f"Connected to WebDriver BiDi session: {session_id}")
+            self.log.info("Connected to WebDriver BiDi session: {}".format(session_id))
             
             # Subscribe to browser events
             self._send_message({
@@ -276,14 +276,14 @@ user_pref("devtools.debugger.remote-host", "localhost");
                 else:
                     raise FirefoxCommunicationsError("Failed to create browsing context")
             
-            self.log.info(f"Created browsing context: {self.browsing_context}")
+            self.log.info("Created browsing context: {}".format(self.browsing_context))
             
             # Get the list of browsing contexts (tabs/windows)
             self._list_browsing_contexts()
             
         except Exception as e:
-            self.log.warning(f"WebDriver BiDi initialization failed: {e}")
-            raise FirefoxCommunicationsError(f"Failed to initialize WebDriver BiDi connection: {e}")
+            self.log.warning("WebDriver BiDi initialization failed: {}".format(e))
+            raise FirefoxCommunicationsError("Failed to initialize WebDriver BiDi connection: {}".format(e))
     
     def _send_message(self, message: Dict[str, Any]) -> Dict[str, Any]:
         """Send a message to Firefox and wait for response"""
@@ -298,7 +298,7 @@ user_pref("devtools.debugger.remote-host", "localhost");
             expected_id = message["id"]
             
             message_str = json.dumps(message)
-            self.log.debug(f"Sending message: {message_str}")
+            self.log.debug("Sending message: {}".format(message_str))
             
             self.ws_connection.send(message_str)
             
@@ -308,7 +308,7 @@ user_pref("devtools.debugger.remote-host", "localhost");
             
             while time.time() - start_time < timeout:
                 response_str = self.ws_connection.recv()
-                self.log.debug(f"Received response: {response_str}")
+                self.log.debug("Received response: {}".format(response_str))
                 
                 response = json.loads(response_str)
                 
@@ -319,10 +319,10 @@ user_pref("devtools.debugger.remote-host", "localhost");
                         error_msg = response.get("message", "Unknown error")
                         if isinstance(error_msg, dict):
                             error_msg = str(error_msg)
-                        raise FirefoxError(f"Firefox error: {error_msg}")
+                        raise FirefoxError("Firefox error: {}".format(error_msg))
                     elif response.get("type") == "error":
                         error_msg = response.get("message", "Unknown error")
-                        raise FirefoxError(f"Firefox error: {error_msg}")
+                        raise FirefoxError("Firefox error: {}".format(error_msg))
                     
                     return response
                 
@@ -334,10 +334,10 @@ user_pref("devtools.debugger.remote-host", "localhost");
                 # For now, just continue waiting for our response
                 
             
-            raise FirefoxCommunicationsError(f"Timeout waiting for response with ID {expected_id}")
+            raise FirefoxCommunicationsError("Timeout waiting for response with ID {}".format(expected_id))
             
         except Exception as e:
-            raise FirefoxCommunicationsError(f"Failed to send message: {e}")
+            raise FirefoxCommunicationsError("Failed to send message: {}".format(e))
     
     def _receive_event(self, event_type: str, params: dict, timeout: int = 5) -> Optional[Dict[str, Any]]:
         """Receive a specific event from the WebSocket"""
@@ -355,7 +355,7 @@ user_pref("devtools.debugger.remote-host", "localhost");
                 # If it's an error, raise it
                 if response.get("type") == "error":
                     error_msg = response.get("message", "Unknown error")
-                    raise FirefoxError(f"Firefox error: {error_msg}")
+                    raise FirefoxError("Firefox error: {}".format(error_msg))
                 
                 # If it's a response to a previous message, handle it
                 if "id" in response:
@@ -366,7 +366,7 @@ user_pref("devtools.debugger.remote-host", "localhost");
             return None
             
         except Exception as e:
-            self.log.debug(f"Error receiving event: {e}")
+            self.log.debug("Error receiving event: {}".format(e))
             return None
     
     def _dictionaries_match(self, pattern: dict, data: dict, required: bool) -> bool:
@@ -438,7 +438,7 @@ user_pref("devtools.debugger.remote-host", "localhost");
             return interface
             
         except Exception as e:
-            self.log.error(f"Failed to create new tab: {e}")
+            self.log.error("Failed to create new tab: {}".format(e))
             raise
 
     def _create_interface_for_context(self, context_id: str) -> 'FirefoxRemoteDebugInterface':
@@ -487,15 +487,15 @@ user_pref("devtools.debugger.remote-host", "localhost");
             response = self._send_message(message)
             
             try:
-                self.log.debug(f"Parsing response: {response}")
+                self.log.debug("Parsing response: {}".format(response))
                 
                 # Check if we have the expected structure
                 if not isinstance(response, dict):
-                    self.log.warning(f"Response is not a dict: {type(response)}")
+                    self.log.warning("Response is not a dict: {}".format(type(response)))
                     return []
                 
                 if response.get("type") != "success":
-                    self.log.warning(f"Response type is not success: {response.get('type')}")
+                    self.log.warning("Response type is not success: {}".format(response.get('type')))
                     return []
                 
                 if "result" not in response:
@@ -508,19 +508,19 @@ user_pref("devtools.debugger.remote-host", "localhost");
                 
                 contexts = response["result"]["contexts"]
                 if not isinstance(contexts, list):
-                    self.log.warning(f"Contexts is not a list: {type(contexts)}")
+                    self.log.warning("Contexts is not a list: {}".format(type(contexts)))
                     return []
                 
                 self.tabs = {}
                 self.tab_id_map = {}
                 
                 for i, context in enumerate(contexts):
-                    self.log.debug(f"Processing context {i}: {context}")
+                    self.log.debug("Processing context {}: {}".format(i, context))
                     
                     # WebDriver BiDi doesn't have a "type" field, so we check for tab-like contexts
                     # Use .get() to safely access fields
                     if not isinstance(context, dict):
-                        self.log.warning(f"Context {i} is not a dict: {type(context)}")
+                        self.log.warning("Context {} is not a dict: {}".format(i, type(context)))
                         continue
                     
                     tab_info = {
@@ -530,7 +530,7 @@ user_pref("devtools.debugger.remote-host", "localhost");
                         "type": "tab"
                     }
                     
-                    self.log.debug(f"Tab info: {tab_info}")
+                    self.log.debug("Tab info: {}".format(tab_info))
                     
                     if tab_info["actor"]:  # Only add if we have a valid context
                         # Create an interface instance for this context
@@ -538,18 +538,18 @@ user_pref("devtools.debugger.remote-host", "localhost");
                         self.tabs[tab_info["actor"]] = interface
                         self.tab_id_map[tab_info["actor"]] = tab_info
                 
-                self.log.info(f"Found {len(self.tabs)} tabs")
+                self.log.info("Found {} tabs".format(len(self.tabs)))
                 return list(self.tabs.values())
                 
             except Exception as e:
-                self.log.warning(f"Error parsing browsing contexts: {e}")
-                self.log.warning(f"Response was: {response}")
+                self.log.warning("Error parsing browsing contexts: {}".format(e))
+                self.log.warning("Response was: {}".format(response))
                 import traceback
-                self.log.warning(f"Traceback: {traceback.format_exc()}")
+                self.log.warning("Traceback: {}".format(traceback.format_exc()))
                 return []
                 
         except Exception as e:
-            self.log.warning(f"Failed to list browsing contexts: {e}")
+            self.log.warning("Failed to list browsing contexts: {}".format(e))
             return []
     
     def list_tabs(self) -> List[Dict[str, Any]]:
@@ -569,7 +569,7 @@ user_pref("devtools.debugger.remote-host", "localhost");
                     self.tabs[tab_id] = tab
                     return tab
             
-            raise FirefoxTabNotFoundError(f"Tab {tab_id} not found")
+            raise FirefoxTabNotFoundError("Tab {} not found".format(tab_id))
         
         return self.tabs[tab_id]
     
@@ -605,13 +605,13 @@ user_pref("devtools.debugger.remote-host", "localhost");
                     time.sleep(0.1)
                     
                 except Exception as e:
-                    self.log.debug(f"Event listening error: {e}")
+                    self.log.debug("Event listening error: {}".format(e))
                     break
             
             return {"status": "success", "url": url, "navigation": navigation}
             
         except Exception as e:
-            raise FirefoxNavigateTimedOut(f"Navigation to {url} timed out: {e}")
+            raise FirefoxNavigateTimedOut("Navigation to {} timed out: {}".format(url, e))
 
     def get_all_tab_interfaces(self) -> List['FirefoxRemoteDebugInterface']:
         """
@@ -671,7 +671,7 @@ user_pref("devtools.debugger.remote-host", "localhost");
                 return True
             return False
         except Exception as e:
-            self.log.error(f"Failed to close tab {tab_id}: {e}")
+            self.log.error("Failed to close tab {}: {}".format(tab_id, e))
             return False
 
     def close_all_tabs(self) -> bool:
@@ -687,7 +687,7 @@ user_pref("devtools.debugger.remote-host", "localhost");
                 self.close_tab(tab_id)
             return True
         except Exception as e:
-            self.log.error(f"Failed to close all tabs: {e}")
+            self.log.error("Failed to close all tabs: {}".format(e))
             return False
     
     def close(self):
@@ -719,7 +719,7 @@ user_pref("devtools.debugger.remote-host", "localhost");
         try:
             if self.temp_profile and os.path.exists(self.temp_profile):
                 shutil.rmtree(self.temp_profile)
-                self.log.debug(f"Cleaned up temporary profile: {self.temp_profile}")
+                self.log.debug("Cleaned up temporary profile: {}".format(self.temp_profile))
         except:
             pass
         

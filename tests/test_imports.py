@@ -80,7 +80,7 @@ def test_interface_methods():
     ]
     
     for method in expected_methods:
-        assert hasattr(interface, method), f"Method {method} missing from FirefoxRemoteDebugInterface"
+        assert hasattr(interface, method), "Method {} missing from FirefoxRemoteDebugInterface".format(method)
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -59,7 +59,7 @@ class TestHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-type", "text/html")
             self.end_headers()
-            response = f"<html><body><h1>Cookies: {cookies}</h1></body></html>"
+            response = "<html><body><h1>Cookies: {}</h1></body></html>".format(cookies)
             self.wfile.write(response.encode())
             return
         
@@ -78,7 +78,7 @@ class TestHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header("Content-type", "text/html")
             self.end_headers()
             
-            response = f"""<html><body>
+            response = """<html><body>
                 <h1>Form Submitted</h1>
                 <p>Data: {post_data.decode()}</p>
             </body></html>"""
@@ -95,7 +95,7 @@ class TestServer:
         self.port = port
         self.server = None
         self.server_thread = None
-        self.base_url = f"http://localhost:{port}"
+        self.base_url = "http://localhost:{}".format(port)
     
     def start(self):
         """Start the test server in a background thread"""
@@ -113,7 +113,7 @@ class TestServer:
             # Wait a moment for server to start
             time.sleep(0.5)
             
-            print(f"Test server started on {self.base_url}")
+            print("Test server started on {}".format(self.base_url))
         except OSError as e:
             if "Address already in use" in str(e):
                 # Try to find an available port
@@ -123,7 +123,7 @@ class TestServer:
                 self.port = sock.getsockname()[1]
                 sock.close()
                 
-                self.base_url = f"http://localhost:{self.port}"
+                self.base_url = "http://localhost:{}".format(self.port)
                 
                 # Create server with new port
                 self.server = socketserver.TCPServer(("localhost", self.port), TestHTTPRequestHandler)
@@ -133,7 +133,7 @@ class TestServer:
                 # Wait a moment for server to start
                 time.sleep(0.5)
                 
-                print(f"Test server started on {self.base_url} (port {self.port} was in use)")
+                print("Test server started on {} (port {} was in use)".format(self.base_url, self.port))
             else:
                 raise
     
@@ -151,7 +151,7 @@ class TestServer:
     
     def get_url(self, path=""):
         """Get full URL for a path"""
-        return f"{self.base_url}{path}"
+        return "{}{}".format(self.base_url, path)
     
     def __enter__(self):
         """Context manager entry"""
@@ -282,7 +282,7 @@ if __name__ == "__main__":
     server = TestServer()
     server.start()
     
-    print(f"Test server running on {server.base_url}")
+    print("Test server running on {}".format(server.base_url))
     print("Press Ctrl+C to stop...")
     
     try:

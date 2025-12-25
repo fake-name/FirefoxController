@@ -42,22 +42,22 @@ def test_basic_functionality():
             
             # Test listing tabs
             tabs = firefox.manager.list_tabs()
-            logger.info(f"Found {len(tabs)} tabs")
+            logger.info("Found {} tabs".format(len(tabs)))
             
             if tabs:
                 tab_id = tabs[0]["actor"]
-                logger.info(f"Using tab: {tab_id}")
+                logger.info("Using tab: {}".format(tab_id))
                 
                 # Test navigation to local test server
                 source = firefox.blocking_navigate_and_get_source(test_server.get_url("/simple"), timeout=10)
-                logger.info(f"Successfully navigated and got {len(source)} characters of source")
+                logger.info("Successfully navigated and got {} characters of source".format(len(source)))
                 
                 # Verify we got the expected content
                 assert "Simple Test Page" in source, "Expected content not found in page source"
                 
                 # Test getting URL and title
                 title, url = firefox.get_page_url_title()
-                logger.info(f"Title: {title}, URL: {url}")
+                logger.info("Title: {}, URL: {}".format(title, url))
                 
                 logger.info("Basic functionality test completed successfully")
     
@@ -90,25 +90,25 @@ def test_navigation_features():
             ]
             
             for url in test_urls:
-                logger.info(f"Navigating to {url}...")
+                logger.info("Navigating to {}...".format(url))
                 source = firefox.blocking_navigate_and_get_source(url, timeout=15)
                 
                 # Verify we got some source
-                assert len(source) > 0, f"Got empty source from {url}"
-                logger.info(f" Successfully got {len(source)} characters from {url}")
+                assert len(source) > 0, "Got empty source from {}".format(url)
+                logger.info(" Successfully got {} characters from {}".format(len(source), url))
                 
                 # Test get_page_source separately
                 source2 = firefox.get_page_source()
                 assert len(source2) > 0, "get_page_source() returned empty source"
-                logger.info(f" get_page_source() returned {len(source2)} characters")
+                logger.info(" get_page_source() returned {} characters".format(len(source2)))
                 
                 # Test get_current_url
                 current_url = firefox.get_current_url()
-                logger.info(f" Current URL: {current_url}")
+                logger.info(" Current URL: {}".format(current_url))
                 
                 # Test get_page_url_title
                 title, page_url = firefox.get_page_url_title()
-                logger.info(f" Title: '{title}', URL: {page_url}")
+                logger.info(" Title: '{}', URL: {}".format(title, page_url))
             
             logger.info("Navigation features test completed successfully")
     
@@ -139,13 +139,13 @@ def test_screenshot_features():
             screenshot = firefox.take_screenshot(format="png")
             
             assert len(screenshot) > 0, "Screenshot was empty"
-            logger.info(f" Successfully took screenshot ({len(screenshot)} bytes)")
+            logger.info(" Successfully took screenshot ({} bytes)".format(len(screenshot)))
             
             # Save screenshot to file for verification
             screenshot_path = "test_screenshot.png"
             with open(screenshot_path, "wb") as f:
                 f.write(screenshot)
-            logger.info(f" Saved screenshot to {screenshot_path}")
+            logger.info(" Saved screenshot to {}".format(screenshot_path))
             
             # Clean up
             if os.path.exists(screenshot_path):
@@ -176,20 +176,20 @@ def test_tab_management():
             
             # Test listing tabs
             tabs = firefox.manager.list_tabs()
-            logger.info(f" Found {len(tabs)} tabs initially")
+            logger.info(" Found {} tabs initially".format(len(tabs)))
             
             # Test getting specific tab info
             if tabs:
                 tab_id = tabs[0]["actor"]
                 tab_info = firefox.manager.get_tab(tab_id)
-                logger.info(f" Got tab info: {tab_info}")
+                logger.info(" Got tab info: {}".format(tab_info))
             
             # Test navigation creates new tab context
             firefox.blocking_navigate_and_get_source(test_server.get_url("/simple"), timeout=15)
             
             # Check tabs again
             tabs_after = firefox.manager.list_tabs()
-            logger.info(f" Found {len(tabs_after)} tabs after navigation")
+            logger.info(" Found {} tabs after navigation".format(len(tabs_after)))
             
             logger.info("Tab management test completed successfully")
     
@@ -210,7 +210,7 @@ def test_custom_profile():
         
         # Create a temporary profile directory
         with tempfile.TemporaryDirectory() as temp_profile_dir:
-            logger.info(f"Using temporary profile: {temp_profile_dir}")
+            logger.info("Using temporary profile: {}".format(temp_profile_dir))
             
             with FirefoxController.FirefoxRemoteDebugInterface(
                 headless=False,
@@ -220,11 +220,11 @@ def test_custom_profile():
                 
                 # Test basic functionality with custom profile
                 tabs = firefox.manager.list_tabs()
-                logger.info(f" Found {len(tabs)} tabs with custom profile")
+                logger.info(" Found {} tabs with custom profile".format(len(tabs)))
                 
                 # Test navigation
                 source = firefox.blocking_navigate_and_get_source(test_server.get_url("/simple"), timeout=15)
-                logger.info(f" Successfully navigated with custom profile ({len(source)} chars)")
+                logger.info(" Successfully navigated with custom profile ({} chars)".format(len(source)))
                 
                 logger.info("Custom profile test completed successfully")
     
@@ -273,11 +273,11 @@ def test_context_manager():
         # Use context manager
         with firefox:
             tabs = firefox.manager.list_tabs()
-            logger.info(f" Context manager working - found {len(tabs)} tabs")
+            logger.info(" Context manager working - found {} tabs".format(len(tabs)))
             
             # Do some operations
             source = firefox.blocking_navigate_and_get_source(test_server.get_url("/simple"), timeout=15)
-            logger.info(f" Context manager navigation successful ({len(source)} chars)")
+            logger.info(" Context manager navigation successful ({} chars)".format(len(source)))
         
         # After context manager exits, Firefox should be closed
         logger.info(" Context manager exited cleanly")
@@ -311,7 +311,7 @@ def test_multi_tab_functionality():
             # Get initial tab count
             initial_tabs = firefox.manager.list_tabs()
             initial_count = len(initial_tabs)
-            logger.info(f" Initial tab count: {initial_count}")
+            logger.info(" Initial tab count: {}".format(initial_count))
             
             # Open new tabs with different test pages
             test_pages = [
@@ -327,18 +327,18 @@ def test_multi_tab_functionality():
                 new_tab_interface = firefox.new_tab(test_server.get_url(page))
                 if new_tab_interface:
                     tab_interfaces.append((new_tab_interface, test_server.get_url(page), expected_title))
-                    logger.info(f" Opened tab for {page}")
+                    logger.info(" Opened tab for {}".format(page))
                 else:
-                    logger.warning(f" Failed to open tab for {page}")
+                    logger.warning(" Failed to open tab for {}".format(page))
             
             # Test 2: Verify we have the expected number of tabs
             final_tabs = firefox.manager.list_tabs()
             final_count = len(final_tabs)
-            logger.info(f" Final tab count: {final_count}")
+            logger.info(" Final tab count: {}".format(final_count))
             
             expected_tab_count = initial_count + len(tab_interfaces)
-            assert final_count >= expected_tab_count, f"Tab count verification failed ({final_count} < {expected_tab_count})"
-            logger.info(f" Tab count verification passed ({final_count} >= {expected_tab_count})")
+            assert final_count >= expected_tab_count, "Tab count verification failed ({} < {})".format(final_count, expected_tab_count)
+            logger.info(" Tab count verification passed ({} >= {})".format(final_count, expected_tab_count))
             
             # Test 3: Test each tab interface individually
             logger.info(" Testing individual tab interfaces...")
@@ -350,11 +350,11 @@ def test_multi_tab_functionality():
                 # Get title from this specific tab
                 title, url = tab_interface.get_page_url_title()
                 
-                logger.info(f" Tab {i+1}: URL={url}, Title='{title}'")
+                logger.info(" Tab {}: URL={}, Title='{}'".format(i+1, url, title))
                 
                 # Verify content
-                assert expected_title in source and expected_title in title, f"Tab {i+1}: Content verification failed"
-                logger.info(f" Tab {i+1}: Content verification passed")
+                assert expected_title in source and expected_title in title, "Tab {}: Content verification failed".format(i+1)
+                logger.info(" Tab {}: Content verification passed".format(i+1))
                     
             
             # Test 4: Verify tab creation and interface tracking
@@ -364,8 +364,8 @@ def test_multi_tab_functionality():
             all_tab_interfaces = firefox.manager.get_all_tab_interfaces()
             final_interface_count = len(all_tab_interfaces)
             
-            assert final_interface_count > initial_count, f"Tab interface tracking failed ({final_interface_count} <= {initial_count})"
-            logger.info(f" Tab interface tracking passed ({final_interface_count} > {initial_count})")
+            assert final_interface_count > initial_count, "Tab interface tracking failed ({} <= {})".format(final_interface_count, initial_count)
+            logger.info(" Tab interface tracking passed ({} > {})".format(final_interface_count, initial_count))
             
             logger.info("Multi-tab functionality test completed successfully")
     
