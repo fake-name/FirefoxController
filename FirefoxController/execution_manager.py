@@ -342,8 +342,11 @@ user_pref("devtools.debugger.remote-host", "localhost");
     def _receive_event(self, event_type: str, params: dict, timeout: int = 5) -> Optional[Dict[str, Any]]:
         """Receive a specific event from the WebSocket"""
         try:
-            start_time = time.time()
-            while time.time() - start_time < timeout:
+            # Set timeout on the WebSocket connection
+            original_timeout = self.ws_connection.gettimeout()
+            self.ws_connection.settimeout(timeout)
+            
+            try:
                 response_str = self.ws_connection.recv()
                 response = json.loads(response_str)
                 
@@ -357,14 +360,28 @@ user_pref("devtools.debugger.remote-host", "localhost");
                     error_msg = response.get("message", "Unknown error")
                     raise FirefoxError("Firefox error: {}".format(error_msg))
                 
-                # If it's a response to a previous message, handle it
+                # If it's a response to a previous message, ignore it
                 if "id" in response:
                     # This is a response to a previous request, not an event
-                    # We should probably handle this better in a real implementation
-                    continue
+                    # Continue waiting for the actual event
+                    return None
+                
+                # If we got a message but it's not what we want, continue waiting
+                return None
+                
+            except websocket.WebSocketTimeoutException:
+                # Timeout occurred
+                return None
+            except Exception as e:
+                self.log.debug("Error receiving event: {}".format(e))
+                return None
+            finally:
+                # Restore original timeout
+                try:
+                    self.ws_connection.settimeout(original_timeout)
+                except:
+                    pass
                     
-            return None
-            
         except Exception as e:
             self.log.debug("Error receiving event: {}".format(e))
             return None

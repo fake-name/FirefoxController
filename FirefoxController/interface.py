@@ -15,14 +15,16 @@ from typing import Optional, Dict, Any, List, Union
 
 from .execution_manager import FirefoxExecutionManager
 from .exceptions import FirefoxError
+from .webdriver_bidi_mixin import WebDriverBiDiMixin
 
 
-class FirefoxRemoteDebugInterface:
+class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
     """
     High-level interface for Firefox remote debugging.
     
     This class provides a more convenient interface similar to ChromeController's
     ChromeRemoteDebugInterface, but adapted for Firefox's protocol.
+    It inherits from WebDriverBiDiMixin to provide comprehensive WebDriver-BiDi functionality.
     """
     
     def __init__(self,
