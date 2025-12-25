@@ -1,25 +1,41 @@
-"""
-FirefoxController - Python interface for Firefox Remote Debugging Protocol
+#!/usr/bin/env python3
 
-This package provides a Python wrapper for controlling Firefox using its remote
-debugging interface, similar to ChromeController for Chrome/Chromium.
+"""
+FirefoxController - Main package initialization
+
+This package provides a Python interface to control Firefox using its remote debugging protocol.
 """
 
-from .firefox_controller import (
+from .interface import FirefoxRemoteDebugInterface
+from .execution_manager import FirefoxExecutionManager
+from .exceptions import (
     FirefoxControllerException,
-    FirefoxStartupException, 
+    FirefoxStartupException,
     FirefoxConnectFailure,
     FirefoxCommunicationsError,
     FirefoxTabNotFoundError,
     FirefoxError,
     FirefoxDiedError,
     FirefoxNavigateTimedOut,
-    FirefoxResponseNotReceived,
-    FirefoxExecutionManager,
-    FirefoxRemoteDebugInterface,
-    setup_logging
+    FirefoxResponseNotReceived
 )
 
-__version__ = "0.1.0"
-__author__ = "FirefoxController"
-__license__ = "BSD"
+# Main exports
+__all__ = [
+    'FirefoxRemoteDebugInterface',
+    'FirefoxExecutionManager',
+    'FirefoxControllerException',
+    'FirefoxStartupException',
+    'FirefoxConnectFailure',
+    'FirefoxCommunicationsError',
+    'FirefoxTabNotFoundError',
+    'FirefoxError',
+    'FirefoxDiedError',
+    'FirefoxNavigateTimedOut',
+    'FirefoxResponseNotReceived',
+    'setup_logging',
+    'main'
+]
+
+# Import utility functions from the original firefox_controller.py
+from .utils import setup_logging, main
