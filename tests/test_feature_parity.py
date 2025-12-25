@@ -246,9 +246,10 @@ def test_advanced_features():
             assert len(source) > 0, "Rendered page source should not be empty"
             
             # Test new_tab
-            new_tab_id = firefox.new_tab(test_server.get_url("/javascript"))
-            logger.info(f"new_tab result: {new_tab_id}")
-            assert len(new_tab_id) > 0, "new_tab should return a non-empty context ID"
+            new_tab_interface = firefox.new_tab(test_server.get_url("/javascript"))
+            logger.info(f"new_tab result: {new_tab_interface}")
+            assert new_tab_interface is not None, "new_tab should return a valid interface instance"
+            assert hasattr(new_tab_interface, 'active_browsing_context'), "new_tab should return an interface with active_browsing_context"
             
             logger.info("Advanced feature tests completed successfully")
     

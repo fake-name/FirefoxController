@@ -181,12 +181,17 @@ class FirefoxRemoteDebugInterface:
         url = self.get_current_url()
         
         try:
+            # Use the interface's own browsing context, not the manager's global one
+            context = self.active_browsing_context or self.manager.browsing_context
+            if not context:
+                raise FirefoxError("No browsing context available")
+            
             # Get title using WebDriver BiDi
             response = self.manager._send_message({
                 'method': 'script.evaluate',
                 'params': {
                     'expression': 'document.title',
-                    'target': {'context': self.manager.browsing_context},
+                    'target': {'context': context},
                     'awaitPromise': False
                 }
             })
@@ -210,11 +215,13 @@ class FirefoxRemoteDebugInterface:
                 raise FirefoxError("No browsing context available")
             
             # Take screenshot using WebDriver BiDi
+            # The format parameter should be an object with type property
+            format_obj = {"type": format} if format else {"type": "png"}
             response = self.manager._send_message({
                 'method': 'browsingContext.captureScreenshot',
                 'params': {
                     'context': self.manager.browsing_context,
-                    'format': format
+                    'format': format_obj
                 }
             })
             
@@ -227,7 +234,7 @@ class FirefoxRemoteDebugInterface:
             self.log.warning(f"Failed to take screenshot: {e}")
             return b""
     
-    def __exec_js(self, script: str, should_call: bool = False, args: list = None) -> Any:
+    def __exec_js(self, script: str, should_call: bool = False, args: list = None, await_promise: bool = False) -> Any:
         """
         Internal method to execute JavaScript in the browser context.
         
@@ -235,6 +242,7 @@ class FirefoxRemoteDebugInterface:
             script: JavaScript code to execute
             should_call: Whether to call the script as a function
             args: Arguments to pass if should_call is True
+            await_promise: Whether to await a promise result
         
         Returns:
             Result of JavaScript execution
@@ -256,7 +264,7 @@ class FirefoxRemoteDebugInterface:
                     'params': {
                         'expression': call_expr,
                         'target': {'context': context},
-                        'awaitPromise': True
+                        'awaitPromise': await_promise
                     }
                 })
             else:
@@ -266,7 +274,7 @@ class FirefoxRemoteDebugInterface:
                     'params': {
                         'expression': script,
                         'target': {'context': context},
-                        'awaitPromise': False
+                        'awaitPromise': await_promise
                     }
                 })
             
@@ -277,14 +285,32 @@ class FirefoxRemoteDebugInterface:
                 # Check if this is the outer result with type/success
                 if isinstance(result_obj, dict) and "type" in result_obj and result_obj["type"] == "success":
                     inner_result = result_obj.get("result", {})
-                    if "value" in inner_result:
+                    
+                    # Check for complex objects first
+                    if isinstance(inner_result, dict) and inner_result.get("type") == "object" and isinstance(inner_result.get("value"), list):
+                        # For complex objects returned as arrays of key-value pairs
+                        # Convert the array structure back to a dictionary
+                        result_dict = {}
+                        for key, value_obj in inner_result["value"]:
+                            if isinstance(value_obj, dict) and "value" in value_obj:
+                                result_dict[key] = value_obj["value"]
+                            else:
+                                result_dict[key] = value_obj
+                        return result_dict
+                    elif "value" in inner_result:
                         return inner_result["value"]
                     elif "type" in inner_result and "value" in inner_result:
                         # Some responses have type and value at the same level
                         return inner_result["value"]
+                    elif isinstance(inner_result, dict):
+                        # For complex objects, return the entire inner result
+                        return inner_result
                 # Direct value access (older style)
                 elif "value" in result_obj:
                     return result_obj["value"]
+                elif isinstance(result_obj, dict):
+                    # For complex objects at the top level
+                    return result_obj
             
             return None
                 
@@ -315,7 +341,7 @@ class FirefoxRemoteDebugInterface:
         Returns:
             Result of function execution
         """
-        return self.__exec_js(script, should_call=True, args=args)
+        return self.__exec_js(script, should_call=True, args=args, await_promise=False)
     
     def navigate_to(self, url: str) -> bool:
         """
@@ -497,10 +523,10 @@ class FirefoxRemoteDebugInterface:
         try:
             # Try to find element using querySelector
             script = """
-                function findElement(search) {
+                function() {
                     try {
                         // Try as CSS selector first
-                        let element = document.querySelector(search);
+                        let element = document.querySelector(arguments[0]);
                         if (element) {
                             return {
                                 found: true,
@@ -515,7 +541,7 @@ class FirefoxRemoteDebugInterface:
                         
                         // Try as XPath if CSS selector fails
                         try {
-                            let result = document.evaluate(search, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+                            let result = document.evaluate(arguments[0], document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
                             let xpathElement = result.singleNodeValue;
                             if (xpathElement) {
                                 return {
@@ -537,7 +563,6 @@ class FirefoxRemoteDebugInterface:
                         return { found: false, error: e.message };
                     }
                 }
-                findElement(arguments[0]);
             """
             
             result = self.execute_javascript_function(script, [search])
@@ -563,9 +588,9 @@ class FirefoxRemoteDebugInterface:
         """
         try:
             script = """
-                function clickElement(selector) {
+                function() {
                     try {
-                        let element = document.querySelector(selector);
+                        let element = document.querySelector(arguments[0]);
                         if (element) {
                             element.click();
                             return true;
@@ -575,7 +600,6 @@ class FirefoxRemoteDebugInterface:
                         return false;
                     }
                 }
-                clickElement(arguments[0]);
             """
             
             result = self.execute_javascript_function(script, [selector])
@@ -597,9 +621,9 @@ class FirefoxRemoteDebugInterface:
         """
         try:
             script = """
-                function clickLinkContainingUrl(url) {
+                function() {
                     try {
-                        let links = document.querySelectorAll('a[href*="' + url + '"]');
+                        let links = document.querySelectorAll('a[href*="' + arguments[0] + '"]');
                         if (links.length > 0) {
                             links[0].click();
                             return true;
@@ -609,7 +633,6 @@ class FirefoxRemoteDebugInterface:
                         return false;
                     }
                 }
-                clickLinkContainingUrl(arguments[0]);
             """
             
             result = self.execute_javascript_function(script, [url])
@@ -634,15 +657,14 @@ class FirefoxRemoteDebugInterface:
         """
         try:
             script = """
-                function scrollPage(yDelta, xDelta) {
+                function() {
                     try {
-                        window.scrollBy(xDelta, yDelta);
+                        window.scrollBy(arguments[1], arguments[0]);
                         return true;
                     } catch (e) {
                         return false;
                     }
                 }
-                scrollPage(arguments[0], arguments[1]);
             """
             
             result = self.execute_javascript_function(script, [scroll_y_delta, scroll_x_delta])
