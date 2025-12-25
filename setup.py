@@ -28,6 +28,11 @@ setup(
     install_requires=[
         "websockets>=8.1",
     ],
+    extras_require={
+        "dev": [
+            "pytest>=7.0",
+        ],
+    },
     entry_points={
         "console_scripts": [
             "firefoxcontroller=FirefoxController.firefox_controller:main",
