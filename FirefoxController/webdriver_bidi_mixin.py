@@ -811,12 +811,16 @@ class WebDriverBiDiMixin:
             context = context_id or self.active_browsing_context or self.manager.browsing_context
             if not context:
                 raise Exception("No browsing context available")
-                
-            params = {'context': context}
-            
-            if partition:
-                params['partition'] = partition
-                
+
+            # Build params with proper partition format
+            if not partition:
+                partition = {
+                    'type': 'context',
+                    'context': context
+                }
+
+            params = {'partition': partition}
+
             response = self.manager._send_message({
                 'method': 'storage.getCookies',
                 'params': params
@@ -883,15 +887,20 @@ class WebDriverBiDiMixin:
             # Ensure we have at least name and value
             if not bidi_cookie.get('name') or not bidi_cookie.get('value'):
                 raise ValueError("Cookie must have both 'name' and 'value' fields")
-            
+
+            # Build params with proper partition format
+            # If no partition is provided, use the context-based partition
+            if not partition:
+                partition = {
+                    'type': 'context',
+                    'context': context
+                }
+
             params = {
-                'context': context,
-                'cookie': bidi_cookie
+                'cookie': bidi_cookie,
+                'partition': partition
             }
-            
-            if partition:
-                params['partition'] = partition
-                
+
             response = self.manager._send_message({
                 'method': 'storage.setCookie',
                 'params': params
@@ -930,20 +939,25 @@ class WebDriverBiDiMixin:
             context = context_id or self.active_browsing_context or self.manager.browsing_context
             if not context:
                 return False
-                
+
+            # Build params with proper partition format
+            if not partition:
+                partition = {
+                    'type': 'context',
+                    'context': context
+                }
+
             params = {
-                'context': context,
+                'partition': partition,
                 'name': cookie_name
             }
-            
+
             # Add optional parameters according to specification
             if domain:
                 params['domain'] = domain
             if path:
                 params['path'] = path
-            if partition:
-                params['partition'] = partition
-                
+
             response = self.manager._send_message({
                 'method': 'storage.deleteCookies',  # Fixed: plural form
                 'params': params
@@ -959,11 +973,11 @@ class WebDriverBiDiMixin:
                                partition: Dict[str, str] = None) -> bool:
         """
         Delete all cookies using WebDriver-BiDi.
-        
+
         Args:
             context_id: Browsing context ID (uses current if None)
             partition: Optional partition descriptor
-            
+
         Returns:
             True if successful, False otherwise
         """
@@ -971,19 +985,24 @@ class WebDriverBiDiMixin:
             context = context_id or self.active_browsing_context or self.manager.browsing_context
             if not context:
                 return False
-                
-            params = {'context': context}
-            
-            if partition:
-                params['partition'] = partition
-                
+
+            # Build params with proper partition format
+            if not partition:
+                partition = {
+                    'type': 'context',
+                    'context': context
+                }
+
+            # Use storage.deleteCookies without a name filter to delete all cookies
+            params = {'partition': partition}
+
             response = self.manager._send_message({
-                'method': 'storage.deleteAllCookies',
+                'method': 'storage.deleteCookies',
                 'params': params
             })
-            
+
             return response.get('type') == 'success'
-                
+
         except Exception as e:
             self.log.warning("Failed to delete all cookies: {}".format(e))
             return False

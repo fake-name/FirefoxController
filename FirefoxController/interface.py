@@ -10,7 +10,6 @@ similar to ChromeController's ChromeRemoteDebugInterface.
 import logging
 import time
 import json
-import base64
 from typing import Optional, Dict, Any, List, Union
 
 from .execution_manager import FirefoxExecutionManager
@@ -91,28 +90,8 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
     def get_page_source(self) -> str:
         """Get the page source for the current browsing context"""
         try:
-            # Use the interface's own browsing context, not the manager's global one
-            context = self.active_browsing_context or self.manager.browsing_context
-            if not context:
-                raise FirefoxError("No browsing context available")
-            
-            # Get page source using WebDriver BiDi
-            # Note: WebDriver BiDi doesn't have a direct getDOM command, so we use executeScript
-            response = self.manager._send_message({
-                'method': 'script.evaluate',
-                'params': {
-                    'expression': 'document.documentElement.outerHTML',
-                    'target': {'context': context},
-                    'awaitPromise': False
-                }
-            })
-            
-            # The response structure is: response["result"]["result"]["value"]
-            if "result" in response and "result" in response["result"] and "value" in response["result"]["result"]:
-                return str(response["result"]["result"]["value"])
-            else:
-                return ""
-                
+            # Use the BiDi method from the mixin
+            return self.bidi_get_page_source()
         except Exception as e:
             self.log.warning("Failed to get page source: {}".format(e))
             return ""
@@ -120,60 +99,8 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
     def get_current_url(self) -> str:
         """Get the current URL for the browsing context"""
         try:
-            if not self.manager.browsing_context:
-                raise FirefoxError("No browsing context available")
-            
-            # Method 1: Try to get URL from browsing context info (most reliable)
-            try:
-                # Use the interface's own browsing context, not the manager's global one
-                context_id = self.active_browsing_context or self.manager.browsing_context
-                
-                # Get the browsing context information which includes URL
-                contexts = self.manager._list_browsing_contexts()
-                
-                # Find our current browsing context
-                for context in contexts:
-                    if context.get("actor") == context_id:
-                        url = context.get("url", "")
-                        if url:
-                            return url
-                        break
-            except Exception:
-                pass
-            
-            # Method 2: Try WebDriver BiDi method
-            try:
-                response = self.manager._send_message({
-                    'method': 'browsingContext.getCurrentURL',
-                    'params': {
-                        'context': self.manager.browsing_context
-                    }
-                })
-                
-                if "result" in response and "url" in response["result"]:
-                    return response["result"]["url"]
-            except Exception:
-                pass
-            
-            # Method 3: Fallback to JavaScript (always works but less reliable)
-            try:
-                response = self.manager._send_message({
-                    'method': 'script.evaluate',
-                    'params': {
-                        'expression': 'window.location.href',
-                        'target': {'context': self.manager.browsing_context},
-                        'awaitPromise': False
-                    }
-                })
-                
-                # The response structure is: response["result"]["result"]["value"]
-                if "result" in response and "result" in response["result"] and "value" in response["result"]["result"]:
-                    return str(response["result"]["result"]["value"])
-            except Exception:
-                pass
-            
-            return ""
-                
+            # Use the BiDi method from the mixin
+            return self.bidi_get_current_url()
         except Exception as e:
             self.log.warning("Failed to get current URL: {}".format(e))
             return ""
@@ -183,27 +110,8 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
         url = self.get_current_url()
         
         try:
-            # Use the interface's own browsing context, not the manager's global one
-            context = self.active_browsing_context or self.manager.browsing_context
-            if not context:
-                raise FirefoxError("No browsing context available")
-            
-            # Get title using WebDriver BiDi
-            response = self.manager._send_message({
-                'method': 'script.evaluate',
-                'params': {
-                    'expression': 'document.title',
-                    'target': {'context': context},
-                    'awaitPromise': False
-                }
-            })
-            
-            # The response structure is: response["result"]["result"]["value"]
-            if "result" in response and "result" in response["result"] and "value" in response["result"]["result"]:
-                title = str(response["result"]["result"]["value"])
-            else:
-                title = ""
-                
+            # Use the BiDi method from the mixin
+            title = self.bidi_get_page_title()
         except Exception as e:
             self.log.warning("Failed to get page title: {}".format(e))
             title = ""
@@ -213,25 +121,8 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
     def take_screenshot(self, format: str = "png") -> bytes:
         """Take a screenshot of the current browsing context"""
         try:
-            if not self.manager.browsing_context:
-                raise FirefoxError("No browsing context available")
-            
-            # Take screenshot using WebDriver BiDi
-            # The format parameter should be an object with type property
-            format_obj = {"type": format} if format else {"type": "png"}
-            response = self.manager._send_message({
-                'method': 'browsingContext.captureScreenshot',
-                'params': {
-                    'context': self.manager.browsing_context,
-                    'format': format_obj
-                }
-            })
-            
-            if "result" in response and "data" in response["result"]:
-                return base64.b64decode(response["result"]["data"])
-            else:
-                return b""
-                
+            # Use the BiDi method from the mixin
+            return self.bidi_capture_screenshot(format=format)
         except Exception as e:
             self.log.warning("Failed to take screenshot: {}".format(e))
             return b""
@@ -250,72 +141,12 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
             Result of JavaScript execution
         """
         try:
-            # Use the interface's own browsing context, not the manager's global one
-            context = self.active_browsing_context or self.manager.browsing_context
-            if not context:
-                raise FirefoxError("No browsing context available")
-            
             if should_call:
-                # Execute as function call
-                if args is None:
-                    args = []
-                # Create a function call expression
-                call_expr = "({}).apply(null, {})".format(script, json.dumps(args))
-                response = self.manager._send_message({
-                    'method': 'script.evaluate',
-                    'params': {
-                        'expression': call_expr,
-                        'target': {'context': context},
-                        'awaitPromise': await_promise
-                    }
-                })
+                # Use the BiDi call function method
+                return self.bidi_call_function(script, arguments=args, await_promise=await_promise)
             else:
-                # Execute as statement
-                response = self.manager._send_message({
-                    'method': 'script.evaluate',
-                    'params': {
-                        'expression': script,
-                        'target': {'context': context},
-                        'awaitPromise': await_promise
-                    }
-                })
-            
-            # Parse the WebDriver BiDi response structure
-            # The response has nested result objects
-            if "result" in response:
-                result_obj = response["result"]
-                # Check if this is the outer result with type/success
-                if isinstance(result_obj, dict) and "type" in result_obj and result_obj["type"] == "success":
-                    inner_result = result_obj.get("result", {})
-                    
-                    # Check for complex objects first
-                    if isinstance(inner_result, dict) and inner_result.get("type") == "object" and isinstance(inner_result.get("value"), list):
-                        # For complex objects returned as arrays of key-value pairs
-                        # Convert the array structure back to a dictionary
-                        result_dict = {}
-                        for key, value_obj in inner_result["value"]:
-                            if isinstance(value_obj, dict) and "value" in value_obj:
-                                result_dict[key] = value_obj["value"]
-                            else:
-                                result_dict[key] = value_obj
-                        return result_dict
-                    elif "value" in inner_result:
-                        return inner_result["value"]
-                    elif "type" in inner_result and "value" in inner_result:
-                        # Some responses have type and value at the same level
-                        return inner_result["value"]
-                    elif isinstance(inner_result, dict):
-                        # For complex objects, return the entire inner result
-                        return inner_result
-                # Direct value access (older style)
-                elif "value" in result_obj:
-                    return result_obj["value"]
-                elif isinstance(result_obj, dict):
-                    # For complex objects at the top level
-                    return result_obj
-            
-            return None
-                
+                # Use the BiDi evaluate script method
+                return self.bidi_evaluate_script(script, await_promise=await_promise)
         except Exception as e:
             self.log.warning("Failed to execute JavaScript: {}".format(e))
             return None
@@ -373,18 +204,18 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
     def blocking_navigate(self, url: str, timeout: int = 30) -> bool:
         """
         Perform a blocking navigation to a URL.
-        
+
         Args:
             url: URL to navigate to
             timeout: Maximum time to wait for navigation to complete
-            
+
         Returns:
             True if navigation succeeded, False otherwise
         """
         try:
-            # Use the existing navigate method which is already blocking
-            result = self.manager.navigate(url, timeout)
-            return result.get("status") == "success"
+            # Use the BiDi method from the mixin
+            self.bidi_navigate(url, wait="complete")
+            return True
         except Exception as e:
             self.log.warning("Blocking navigation failed: {}".format(e))
             return False
@@ -397,34 +228,8 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
             List of cookie dictionaries
         """
         try:
-            if not self.manager.browsing_context:
-                raise FirefoxError("No browsing context available")
-            
-            # Get cookies using JavaScript execution (fallback method)
-            # WebDriver BiDi network commands may not be available in all versions
-            script = """
-                function getAllCookies() {
-                    try {
-                        // Return document.cookie parsed into an array of objects
-                        const cookies = document.cookie.split(';').map(cookie => {
-                            const [name, value] = cookie.trim().split('=');
-                            return { name, value };
-                        }).filter(cookie => cookie.name);
-                        return cookies;
-                    } catch (e) {
-                        return [];
-                    }
-                }
-                getAllCookies();
-            """
-            
-            result = self.execute_javascript_statement(script)
-            
-            if result and isinstance(result, list):
-                return result
-            else:
-                return []
-                
+            # Use the BiDi method from the mixin
+            return self.bidi_get_cookies()
         except Exception as e:
             self.log.warning("Failed to get cookies: {}".format(e))
             return []
@@ -440,33 +245,8 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
             True if cookie was set successfully, False otherwise
         """
         try:
-            if not self.manager.browsing_context:
-                raise FirefoxError("No browsing context available")
-            
-            # Set cookie using JavaScript execution
-            name = cookie.get("name", "")
-            value = cookie.get("value", "")
-            domain = cookie.get("domain", "")
-            path = cookie.get("path", "/")
-            expires = cookie.get("expires", "")
-            secure = cookie.get("secure", False)
-            
-            # Build cookie string
-            cookie_str = "{}={}".format(name, value)
-            if domain:
-                cookie_str += "; domain={}".format(domain)
-            if path:
-                cookie_str += "; path={}".format(path)
-            if expires:
-                cookie_str += "; expires={}".format(expires)
-            if secure:
-                cookie_str += "; secure"
-            
-            script = "document.cookie = '{}'".format(cookie_str)
-            result = self.execute_javascript_statement(script)
-            
-            return True
-                
+            # Use the BiDi method from the mixin
+            return self.bidi_set_cookie(cookie)
         except Exception as e:
             self.log.warning("Failed to set cookie: {}".format(e))
             return False
@@ -479,35 +259,8 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
             True if cookies were cleared successfully, False otherwise
         """
         try:
-            if not self.manager.browsing_context:
-                raise FirefoxError("No browsing context available")
-            
-            # Clear cookies by setting expiration to past date
-            # This is a JavaScript-based approach since WebDriver BiDi network commands
-            # may not be available in all versions
-            script = """
-                function clearAllCookies() {
-                    try {
-                        const cookies = document.cookie.split(';');
-                        for (let i = 0; i < cookies.length; i++) {
-                            const cookie = cookies[i];
-                            const eqPos = cookie.indexOf('=');
-                            const name = eqPos > -1 ? cookie.substr(0, eqPos).trim() : cookie.trim();
-                            if (name) {
-                                document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; domain=' + window.location.hostname;
-                            }
-                        }
-                        return true;
-                    } catch (e) {
-                        return false;
-                    }
-                }
-                clearAllCookies();
-            """
-            
-            result = self.execute_javascript_statement(script)
-            return bool(result)
-                
+            # Use the BiDi method from the mixin
+            return self.bidi_delete_all_cookies()
         except Exception as e:
             self.log.warning("Failed to clear cookies: {}".format(e))
             return False
