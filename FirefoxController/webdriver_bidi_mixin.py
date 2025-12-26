@@ -867,8 +867,10 @@ class WebDriverBiDiMixin:
             }
             
             # Add optional fields only if they have valid values
-            if cookie.get('domain'):
-                bidi_cookie['domain'] = str(cookie.get('domain'))
+            # Only include domain if it's not empty (for localhost cookies)
+            domain = str(cookie.get('domain', '')).strip()
+            if domain:
+                bidi_cookie['domain'] = domain
             if cookie.get('path'):
                 bidi_cookie['path'] = str(cookie.get('path'))
             if cookie.get('secure') is not None:
