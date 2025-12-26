@@ -17,6 +17,8 @@ import tempfile
 import os
 import shutil
 import base64
+import queue
+import threading
 from typing import Optional, Dict, Any, List, Union
 from urllib.parse import urlparse
 
@@ -94,6 +96,10 @@ class FirefoxExecutionManager:
         
         # Temporary profile directory
         self.temp_profile = None
+
+        # Event queue for handling asynchronous events
+        self.event_queue = queue.Queue()
+        self.event_queue_lock = threading.Lock()
         
     def _create_profile(self) -> str:
         """Create a temporary Firefox profile with required preferences"""
@@ -327,7 +333,9 @@ user_pref("devtools.debugger.remote-host", "localhost");
                     return response
                 
                 # If this is an event or a response for a different message, continue waiting
-                if response.get("type") == "event":
+                if response.get("type") == "event" or response.get("method"):
+                    # This is an event - put it in the event queue for processing
+                    self.event_queue.put(response)
                     continue
                 
                 # If this is a response for a different message, we might want to handle it

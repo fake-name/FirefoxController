@@ -39,6 +39,12 @@ class TestHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.path = "test_dom.html"
         elif parsed_url.path == "/form":
             self.path = "test_form.html"
+        elif parsed_url.path == "/async-fetch":
+            self.path = "test_async_fetch.html"
+        elif parsed_url.path == "/async-xhr":
+            self.path = "test_async_xhr.html"
+        elif parsed_url.path == "/async-multiple":
+            self.path = "test_async_multiple.html"
         elif parsed_url.path == "/redirect":
             # Test redirect
             self.send_response(302)
@@ -61,6 +67,41 @@ class TestHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             response = "<html><body><h1>Cookies: {}</h1></body></html>".format(cookies)
             self.wfile.write(response.encode())
+            return
+        elif parsed_url.path == "/api/data":
+            # API endpoint for async fetch testing
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            response = json.dumps({
+                "status": "success",
+                "data": "This is async fetched data",
+                "timestamp": time.time()
+            })
+            self.wfile.write(response.encode())
+            return
+        elif parsed_url.path == "/api/delayed":
+            # API endpoint with delay for testing async timing
+            time.sleep(1)  # Simulate slow API
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            response = json.dumps({
+                "status": "success",
+                "data": "This is delayed async data",
+                "delay": "1 second"
+            })
+            self.wfile.write(response.encode())
+            return
+        elif parsed_url.path == "/api/text":
+            # Plain text API endpoint
+            self.send_response(200)
+            self.send_header("Content-type", "text/plain")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(b"Plain text async response")
             return
         
         # Handle static files
@@ -254,6 +295,144 @@ def create_test_html_files():
     <p>This page is for testing cookie functionality.</p>
     <a href="/set-cookie">Set Test Cookie</a> |
     <a href="/check-cookie">Check Cookies</a>
+</body>
+</html>""",
+
+        "test_async_fetch.html": """<html>
+<head>
+    <title>Async Fetch Test Page</title>
+    <script>
+        // Perform async fetch after page load
+        window.addEventListener('load', function() {
+            console.log('Page loaded, starting async fetch...');
+
+            // Fetch data after 500ms delay
+            setTimeout(function() {
+                fetch('/api/data')
+                    .then(response => response.json())
+                    .then(data => {
+                        console.log('Fetched data:', data);
+                        document.getElementById('result').textContent = JSON.stringify(data);
+                        document.getElementById('status').textContent = 'Fetch completed!';
+                    })
+                    .catch(error => {
+                        console.error('Fetch error:', error);
+                        document.getElementById('status').textContent = 'Fetch failed!';
+                    });
+            }, 500);
+        });
+    </script>
+</head>
+<body>
+    <h1>Async Fetch Test Page</h1>
+    <p>This page performs an async fetch after page load.</p>
+    <p>Status: <span id="status">Loading...</span></p>
+    <p>Result: <span id="result"></span></p>
+</body>
+</html>""",
+
+        "test_async_xhr.html": """<html>
+<head>
+    <title>Async XHR Test Page</title>
+    <script>
+        // Perform async XMLHttpRequest after page load
+        window.addEventListener('load', function() {
+            console.log('Page loaded, starting async XHR...');
+
+            // Make XHR after 500ms delay
+            setTimeout(function() {
+                var xhr = new XMLHttpRequest();
+                xhr.open('GET', '/api/text', true);
+                xhr.onload = function() {
+                    if (xhr.status === 200) {
+                        console.log('XHR response:', xhr.responseText);
+                        document.getElementById('result').textContent = xhr.responseText;
+                        document.getElementById('status').textContent = 'XHR completed!';
+                    }
+                };
+                xhr.onerror = function() {
+                    console.error('XHR error');
+                    document.getElementById('status').textContent = 'XHR failed!';
+                };
+                xhr.send();
+            }, 500);
+        });
+    </script>
+</head>
+<body>
+    <h1>Async XHR Test Page</h1>
+    <p>This page performs an async XMLHttpRequest after page load.</p>
+    <p>Status: <span id="status">Loading...</span></p>
+    <p>Result: <span id="result"></span></p>
+</body>
+</html>""",
+
+        "test_async_multiple.html": """<html>
+<head>
+    <title>Multiple Async Requests Test Page</title>
+    <script>
+        // Perform multiple async fetches after page load
+        window.addEventListener('load', function() {
+            console.log('Page loaded, starting multiple async fetches...');
+
+            var fetchCount = 0;
+            var totalFetches = 3;
+
+            function updateStatus() {
+                fetchCount++;
+                document.getElementById('status').textContent =
+                    'Completed ' + fetchCount + ' of ' + totalFetches + ' fetches';
+            }
+
+            // Fetch 1: Immediate
+            fetch('/api/data')
+                .then(response => response.json())
+                .then(data => {
+                    console.log('Fetch 1 data:', data);
+                    document.getElementById('result1').textContent = JSON.stringify(data);
+                    updateStatus();
+                });
+
+            // Fetch 2: After 500ms
+            setTimeout(function() {
+                fetch('/api/text')
+                    .then(response => response.text())
+                    .then(data => {
+                        console.log('Fetch 2 data:', data);
+                        document.getElementById('result2').textContent = data;
+                        updateStatus();
+                    });
+            }, 500);
+
+            // Fetch 3: After 1000ms (delayed API)
+            setTimeout(function() {
+                fetch('/api/delayed')
+                    .then(response => response.json())
+                    .then(data => {
+                        console.log('Fetch 3 data:', data);
+                        document.getElementById('result3').textContent = JSON.stringify(data);
+                        updateStatus();
+                    });
+            }, 1000);
+        });
+    </script>
+</head>
+<body>
+    <h1>Multiple Async Requests Test Page</h1>
+    <p>This page performs multiple async fetches at different times.</p>
+    <p>Status: <span id="status">Loading...</span></p>
+    <div>
+        <h3>Fetch 1 (immediate):</h3>
+        <p id="result1">Waiting...</p>
+    </div>
+    <div>
+        <h3>Fetch 2 (after 500ms):</h3>
+        <p id="result2">Waiting...</p>
+    </div>
+    <div>
+        <h3>Fetch 3 (after 1000ms, delayed API):</h3>
+        <p id="result3">Waiting...</p>
+    </div>
 </body>
 </html>"""
     }

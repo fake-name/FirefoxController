@@ -10,6 +10,8 @@ similar to ChromeController's ChromeRemoteDebugInterface.
 import logging
 import time
 import json
+import threading
+import base64
 from typing import Optional, Dict, Any, List, Union
 
 from .execution_manager import FirefoxExecutionManager
@@ -61,10 +63,18 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
             )
         
         self.log = logging.getLogger("FirefoxController.RemoteDebugInterface")
-        
+
         # This interface is associated with a specific browsing context
         # The manager tracks all contexts, this interface tracks its own
         self.active_browsing_context = None  # Will be set when associated with a context
+
+        # Request logging state (per-tab)
+        self._request_logging_enabled = False
+        self._request_log_cache = {}  # url -> {'url': url, 'mimetype': str, 'content': bytes}
+        self._data_collector_id = None
+        self._pending_requests = {}  # request_id -> request_metadata
+        self._event_polling_thread = None
+        self._stop_event_polling = False
     
     def __enter__(self):
         """Context manager entry"""
@@ -73,6 +83,13 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
     
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit"""
+        # Disable request logging if enabled
+        if self._request_logging_enabled:
+            try:
+                self.disable_request_logging()
+            except Exception as e:
+                self.log.debug("Error disabling request logging on exit: {}".format(e))
+
         return self.manager.__exit__(exc_type, exc_val, exc_tb)
     
     def blocking_navigate_and_get_source(self, url: str, timeout: int = 30) -> str:
@@ -506,12 +523,218 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
     def new_tab(self, url: str = "about:blank") -> 'FirefoxRemoteDebugInterface':
         """
         Create a new tab and return a FirefoxRemoteDebugInterface instance for it.
-        
+
         Args:
             url: URL to navigate to in the new tab
-            
+
         Returns:
             FirefoxRemoteDebugInterface instance for the new tab
         """
         # Use the execution manager's new_tab method which returns an interface instance
         return self.manager.new_tab(url)
+
+    # ========================================================================
+    # Request Logging Methods
+    # ========================================================================
+
+    def _event_polling_worker(self):
+        """Background worker that processes network events from the event queue"""
+        self.log.debug("Event polling worker started")
+
+        while not self._stop_event_polling:
+            try:
+                # Get event from queue with timeout
+                try:
+                    event = self.manager.event_queue.get(timeout=0.5)
+                except:
+                    # Queue empty or timeout - just continue
+                    continue
+
+                # Check if this is a network.responseCompleted event
+                if event.get("method") == "network.responseCompleted":
+                    self._handle_response_completed_event(event.get("params", {}))
+
+            except Exception as e:
+                # Log errors but continue processing
+                self.log.debug("Error processing event: {}".format(e))
+                time.sleep(0.1)
+                continue
+
+        self.log.debug("Event polling worker stopped")
+
+    def _handle_response_completed_event(self, params: Dict[str, Any]):
+        """Handle a network.responseCompleted event"""
+        try:
+            # Extract request and response information
+            request_data = params.get("request", {})
+            response_data = params.get("response", {})
+
+            request_id = request_data.get("request")  # This is the request ID string
+            url = response_data.get("url", "")
+
+            if not request_id or not url:
+                return
+
+            # Get MIME type from response headers
+            mimetype = "application/octet-stream"  # Default
+            headers = response_data.get("headers", [])
+            for header in headers:
+                if header.get("name", "").lower() == "content-type":
+                    mimetype = header.get("value", {}).get("value", mimetype)
+                    break
+
+            # Fetch the response data using network.getData
+            try:
+                data_response = self.manager._send_message({
+                    'method': 'network.getData',
+                    'params': {
+                        'dataType': 'response',
+                        'request': request_id
+                    }
+                })
+
+                # Extract the response body
+                if data_response.get("type") == "success" and "result" in data_response:
+                    result = data_response["result"]
+
+                    # The data is base64 encoded in the "data" field
+                    if "data" in result:
+                        content = base64.b64decode(result["data"])
+
+                        # Store in cache
+                        self._request_log_cache[url] = {
+                            'url': url,
+                            'mimetype': mimetype,
+                            'content': content
+                        }
+
+                        self.log.debug("Cached response for URL: {} ({} bytes)".format(url, len(content)))
+
+            except Exception as e:
+                self.log.debug("Failed to fetch response data for {}: {}".format(url, e))
+
+        except Exception as e:
+            self.log.debug("Error handling responseCompleted event: {}".format(e))
+
+    def enable_request_logging(self):
+        """
+        Enable request logging for this browsing context.
+
+        This will start capturing all HTTP(s) responses fetched by the browser.
+        """
+        if self._request_logging_enabled:
+            self.log.warning("Request logging already enabled")
+            return
+
+        try:
+            context = self.active_browsing_context or self.manager.browsing_context
+            if not context:
+                raise FirefoxError("No browsing context available")
+
+            # Add a data collector for response data
+            # Set max size to 100MB per response
+            response = self.manager._send_message({
+                'method': 'network.addDataCollector',
+                'params': {
+                    'dataTypes': ['response'],
+                    'maxEncodedDataSize': 100 * 1024 * 1024,
+                    'contexts': [context]
+                }
+            })
+
+            if response.get("type") == "success" and "result" in response:
+                self._data_collector_id = response["result"].get("collector")
+
+            # Subscribe to network.responseCompleted events
+            self.bidi_subscribe(["network.responseCompleted"])
+
+            # Start event polling thread
+            self._stop_event_polling = False
+            self._event_polling_thread = threading.Thread(
+                target=self._event_polling_worker,
+                daemon=True
+            )
+            self._event_polling_thread.start()
+
+            self._request_logging_enabled = True
+            self.log.info("Request logging enabled")
+
+        except Exception as e:
+            self.log.error("Failed to enable request logging: {}".format(e))
+            raise
+
+    def disable_request_logging(self):
+        """
+        Disable request logging for this browsing context.
+
+        This will stop capturing responses and clear the cache.
+        """
+        if not self._request_logging_enabled:
+            return
+
+        try:
+            # Stop event polling thread
+            self._stop_event_polling = True
+            if self._event_polling_thread:
+                self._event_polling_thread.join(timeout=2)
+                self._event_polling_thread = None
+
+            # Unsubscribe from events
+            self.bidi_unsubscribe(["network.responseCompleted"])
+
+            # Remove data collector
+            if self._data_collector_id:
+                try:
+                    self.manager._send_message({
+                        'method': 'network.removeDataCollector',
+                        'params': {
+                            'collector': self._data_collector_id
+                        }
+                    })
+                except Exception as e:
+                    self.log.debug("Failed to remove data collector: {}".format(e))
+
+                self._data_collector_id = None
+
+            # Clear cache
+            self._request_log_cache.clear()
+            self._pending_requests.clear()
+
+            self._request_logging_enabled = False
+            self.log.info("Request logging disabled")
+
+        except Exception as e:
+            self.log.error("Failed to disable request logging: {}".format(e))
+            raise
+
+    def get_fetched_urls(self) -> List[str]:
+        """
+        Get list of URLs that have been captured.
+
+        Returns:
+            List of URLs present in the cache
+        """
+        return list(self._request_log_cache.keys())
+
+    def get_content_for_url(self, url: str) -> Optional[Dict[str, Any]]:
+        """
+        Get the cached content for a specific URL.
+
+        Args:
+            url: The URL to get content for
+
+        Returns:
+            Dictionary with 'url', 'mimetype', and 'content' keys, or None if not found
+        """
+        return self._request_log_cache.get(url)
+
+    def clear_request_log_cache(self):
+        """
+        Clear the request log cache without disabling logging.
+
+        This is useful to prevent unbounded memory growth when navigating
+        to many pages.
+        """
+        self._request_log_cache.clear()
+        self._pending_requests.clear()
+        self.log.debug("Request log cache cleared")
