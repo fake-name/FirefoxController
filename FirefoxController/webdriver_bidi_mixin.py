@@ -14,21 +14,12 @@ import base64
 from typing import Optional, Dict, Any, List, Union, Tuple
 
 # Import type validation utilities
-try:
-    from .bidi_types import (
-        validate_browsing_context_type, validate_navigation_type, validate_url,
-        validate_screenshot_format, validate_clip_region, validate_cookie,
-        validate_network_phases, validate_cookie_same_site,
-        BiDiTypeError, BiDiValidationError, BiDiTypeValidator
-    )
-    TYPE_VALIDATION_AVAILABLE = True
-except ImportError:
-    # Fallback for when type validation module is not available
-    TYPE_VALIDATION_AVAILABLE = False
-    class BiDiTypeError(TypeError):
-        pass
-    class BiDiValidationError(ValueError):
-        pass
+from .bidi_types import (
+    validate_browsing_context_type, validate_navigation_type, validate_url,
+    validate_screenshot_format, validate_clip_region, validate_cookie,
+    validate_network_phases, validate_cookie_same_site,
+    BiDiTypeError, BiDiValidationError, BiDiTypeValidator
+)
 
 
 class WebDriverBiDiMixin:
@@ -98,9 +89,8 @@ class WebDriverBiDiMixin:
         """
         try:
             # Validate parameters
-            if TYPE_VALIDATION_AVAILABLE:
-                validate_url(url)
-                validate_navigation_type(wait)
+            validate_url(url)
+            validate_navigation_type(wait)
             
             context = context_id or self.active_browsing_context or self.manager.browsing_context
             if not context:
@@ -116,12 +106,11 @@ class WebDriverBiDiMixin:
             })
             
             # Validate response
-            if TYPE_VALIDATION_AVAILABLE:
-                if response.get('type') != 'success':
-                    error_msg = response.get('error', 'Unknown error')
-                    raise Exception("Navigation failed: {}".format(error_msg))
-                if 'result' not in response:
-                    raise Exception("Navigation response missing result")
+            if response.get('type') != 'success':
+                error_msg = response.get('error', 'Unknown error')
+                raise Exception("Navigation failed: {}".format(error_msg))
+            if 'result' not in response:
+                raise Exception("Navigation response missing result")
             
             if response.get('type') == 'success' and 'result' in response:
                 return response['result']
@@ -211,9 +200,8 @@ class WebDriverBiDiMixin:
         """
         try:
             # Validate parameters
-            if TYPE_VALIDATION_AVAILABLE:
-                if clip:
-                    validate_clip_region(clip)
+            if clip:
+                validate_clip_region(clip)
             
             context = context_id or self.active_browsing_context or self.manager.browsing_context
             if not context:
@@ -233,12 +221,11 @@ class WebDriverBiDiMixin:
             })
             
             # Validate response
-            if TYPE_VALIDATION_AVAILABLE:
-                if response.get('type') != 'success':
-                    error_msg = response.get('error', 'Unknown error')
-                    raise Exception("Screenshot capture failed: {}".format(error_msg))
-                if 'result' not in response or 'data' not in response['result']:
-                    raise Exception("Screenshot response missing data")
+            if response.get('type') != 'success':
+                error_msg = response.get('error', 'Unknown error')
+                raise Exception("Screenshot capture failed: {}".format(error_msg))
+            if 'result' not in response or 'data' not in response['result']:
+                raise Exception("Screenshot response missing data")
             
             if response.get('type') == 'success' and 'result' in response:
                 return base64.b64decode(response['result']['data'])
@@ -562,8 +549,7 @@ class WebDriverBiDiMixin:
         """
         try:
             # Validate phases
-            if TYPE_VALIDATION_AVAILABLE:
-                validate_network_phases(phases)
+            validate_network_phases(phases)
             
             context = context_id or self.active_browsing_context or self.manager.browsing_context
             if not context:
@@ -611,12 +597,11 @@ class WebDriverBiDiMixin:
             })
             
             # Validate response
-            if TYPE_VALIDATION_AVAILABLE:
-                if response.get('type') != 'success':
-                    error_msg = response.get('error', 'Unknown error')
-                    raise Exception("Failed to add intercept: {}".format(error_msg))
-                if 'result' not in response or 'intercept' not in response['result']:
-                    raise Exception("Intercept response missing intercept ID")
+            if response.get('type') != 'success':
+                error_msg = response.get('error', 'Unknown error')
+                raise Exception("Failed to add intercept: {}".format(error_msg))
+            if 'result' not in response or 'intercept' not in response['result']:
+                raise Exception("Intercept response missing intercept ID")
             
             if response.get('type') == 'success' and 'result' in response:
                 return response['result']['intercept']
@@ -853,8 +838,7 @@ class WebDriverBiDiMixin:
         """
         try:
             # Validate cookie format
-            if TYPE_VALIDATION_AVAILABLE:
-                validate_cookie(cookie)
+            validate_cookie(cookie)
             
             context = context_id or self.active_browsing_context or self.manager.browsing_context
             if not context:
@@ -907,11 +891,10 @@ class WebDriverBiDiMixin:
             })
             
             # Validate response
-            if TYPE_VALIDATION_AVAILABLE:
-                if response.get('type') != 'success':
-                    error_msg = response.get('error', 'Unknown error')
-                    self.log.warning("Failed to set cookie: {}".format(error_msg))
-                    return False
+            if response.get('type') != 'success':
+                error_msg = response.get('error', 'Unknown error')
+                self.log.warning("Failed to set cookie: {}".format(error_msg))
+                return False
             
             return response.get('type') == 'success'
                 
