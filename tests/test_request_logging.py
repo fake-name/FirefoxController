@@ -29,8 +29,7 @@ def test_request_logging_basic():
         logger.info("Starting request logging test...")
 
         with FirefoxController.FirefoxRemoteDebugInterface(
-            headless=False,
-            additional_options=["--width=800", "--height=600"]
+            headless=False
         ) as firefox:
 
             # Enable request logging
@@ -108,8 +107,7 @@ def test_request_logging_multiple_resources():
         logger.info("Starting multiple resources test...")
 
         with FirefoxController.FirefoxRemoteDebugInterface(
-            headless=False,
-            additional_options=["--width=800", "--height=600"]
+            headless=False
         ) as firefox:
 
             # Enable request logging
@@ -155,8 +153,7 @@ def test_request_logging_disable_clears_cache():
         logger.info("Starting disable clears cache test...")
 
         with FirefoxController.FirefoxRemoteDebugInterface(
-            headless=False,
-            additional_options=["--width=800", "--height=600"]
+            headless=False
         ) as firefox:
 
             # Enable request logging
@@ -204,8 +201,7 @@ def test_request_logging_multiple_tabs_independent():
         logger.info("Starting multiple tabs independent test...")
 
         with FirefoxController.FirefoxRemoteDebugInterface(
-            headless=False,
-            additional_options=["--width=800", "--height=600"]
+            headless=False
         ) as firefox:
 
             # Navigate main tab to a page
@@ -281,8 +277,7 @@ def test_request_logging_multiple_tabs_all_enabled():
         logger.info("Starting multiple tabs all enabled test...")
 
         with FirefoxController.FirefoxRemoteDebugInterface(
-            headless=False,
-            additional_options=["--width=800", "--height=600"]
+            headless=False
         ) as firefox:
 
             # Create three tabs
@@ -351,8 +346,7 @@ def test_request_logging_disable_one_tab_others_continue():
         logger.info("Starting disable one tab test...")
 
         with FirefoxController.FirefoxRemoteDebugInterface(
-            headless=False,
-            additional_options=["--width=800", "--height=600"]
+            headless=False
         ) as firefox:
 
             # Create two tabs
@@ -419,8 +413,7 @@ def test_request_logging_clear_cache_one_tab_others_unaffected():
         logger.info("Starting clear cache one tab test...")
 
         with FirefoxController.FirefoxRemoteDebugInterface(
-            headless=False,
-            additional_options=["--width=800", "--height=600"]
+            headless=False
         ) as firefox:
 
             # Create two tabs
@@ -487,8 +480,7 @@ def test_request_logging_multiple_tabs_content_verification():
         logger.info("Starting multiple tabs content verification test...")
 
         with FirefoxController.FirefoxRemoteDebugInterface(
-            headless=False,
-            additional_options=["--width=800", "--height=600"]
+            headless=False
         ) as firefox:
 
             # Create a second tab
@@ -562,8 +554,7 @@ def test_request_logging_async_fetch():
         logger.info("Starting async fetch test...")
 
         with FirefoxController.FirefoxRemoteDebugInterface(
-            headless=False,
-            additional_options=["--width=800", "--height=600"]
+            headless=False
         ) as firefox:
 
             # Enable request logging
@@ -622,8 +613,7 @@ def test_request_logging_async_xhr():
         logger.info("Starting async XHR test...")
 
         with FirefoxController.FirefoxRemoteDebugInterface(
-            headless=False,
-            additional_options=["--width=800", "--height=600"]
+            headless=False
         ) as firefox:
 
             # Enable request logging
@@ -675,8 +665,7 @@ def test_request_logging_multiple_async_requests():
         logger.info("Starting multiple async requests test...")
 
         with FirefoxController.FirefoxRemoteDebugInterface(
-            headless=False,
-            additional_options=["--width=800", "--height=600"]
+            headless=False
         ) as firefox:
 
             # Enable request logging
@@ -690,6 +679,9 @@ def test_request_logging_multiple_async_requests():
             for _ in range(5):
                 firefox.poll_events()
                 time.sleep(0.5)
+
+            # Poll one more time to capture any events that arrived during the last sleep
+            firefox.poll_events()
 
             # Get fetched URLs
             fetched_urls = firefox.get_fetched_urls()
@@ -754,8 +746,7 @@ def test_request_logging_async_with_navigation():
         logger.info("Starting async with navigation test...")
 
         with FirefoxController.FirefoxRemoteDebugInterface(
-            headless=False,
-            additional_options=["--width=800", "--height=600"]
+            headless=False
         ) as firefox:
 
             # Enable request logging
@@ -798,6 +789,9 @@ def test_request_logging_async_with_navigation():
                 firefox.poll_events()
                 time.sleep(0.5)
 
+            # Poll one more time to capture any events that arrived during the last sleep
+            firefox.poll_events()
+
             # After clear, should only have URLs from third page
             third_page_urls = firefox.get_fetched_urls()
             logger.info("After clear captured {} URLs".format(len(third_page_urls)))
@@ -828,8 +822,7 @@ def test_request_logging_async_multiple_tabs_independent():
         logger.info("Starting async multiple tabs test...")
 
         with FirefoxController.FirefoxRemoteDebugInterface(
-            headless=False,
-            additional_options=["--width=800", "--height=600"]
+            headless=False
         ) as firefox:
 
             # Create second tab

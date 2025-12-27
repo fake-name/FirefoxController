@@ -54,7 +54,7 @@ class FirefoxExecutionManager:
                  host: str = "localhost",
                  port: int = 9222,
                  websocket_timeout: int = 10,
-                 headless: bool = True,
+                 headless: bool = False,
                  additional_options: List[str] = None,
                  profile_dir: str = None):
         """
@@ -398,13 +398,11 @@ user_pref("devtools.debugger.remote-host", "localhost");
 
         with self.ws_lock:  # Thread-safe WebSocket access
             try:
-                # Set a short timeout for polling
-                original_timeout = self.ws_connection.gettimeout()
-                self.ws_connection.settimeout(timeout)
-
+                # Poll with timeout - websockets-sync uses timeout parameter on recv()
                 try:
                     while True:
-                        response_str = self.ws_connection.recv()
+                        # Use timeout parameter on recv() instead of settimeout()
+                        response_str = self.ws_connection.recv(timeout)
                         if not response_str:
                             break
 
@@ -433,18 +431,12 @@ user_pref("devtools.debugger.remote-host", "localhost");
                             # For now, just log
                             self.log.debug("Received command response during polling: {}".format(response.get("id")))
 
-                except websocket.WebSocketTimeoutException:
+                except TimeoutError:
                     # Timeout is expected when polling - no more events available
                     pass
                 except Exception as e:
                     # Other errors - log and continue
                     self.log.debug("Error polling for events: {}".format(e))
-                finally:
-                    # Restore original timeout
-                    try:
-                        self.ws_connection.settimeout(original_timeout)
-                    except:
-                        pass
 
             except Exception as e:
                 self.log.debug("Error in poll_for_events: {}".format(e))
