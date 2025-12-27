@@ -40,7 +40,7 @@ def test_request_logging_basic():
             firefox.blocking_navigate_and_get_source(test_server.get_url("/simple"), timeout=15)
 
             # Wait a bit for events to be processed
-            time.sleep(2)
+            firefox.poll_events()
 
             # Get list of fetched URLs
             fetched_urls = firefox.get_fetched_urls()
@@ -77,7 +77,7 @@ def test_request_logging_basic():
 
             # Navigate to another page to test that logging still works
             firefox.blocking_navigate_and_get_source(test_server.get_url("/javascript"), timeout=15)
-            time.sleep(2)
+            firefox.poll_events()
 
             fetched_urls_after_nav = firefox.get_fetched_urls()
             assert len(fetched_urls_after_nav) > 0, "Should have captured requests after clearing cache"
@@ -119,7 +119,7 @@ def test_request_logging_multiple_resources():
             firefox.blocking_navigate_and_get_source(test_server.get_url("/dom"), timeout=15)
 
             # Wait for all resources to load
-            time.sleep(3)
+            firefox.poll_events()
 
             # Get list of fetched URLs
             fetched_urls = firefox.get_fetched_urls()
@@ -164,7 +164,7 @@ def test_request_logging_disable_clears_cache():
 
             # Navigate to a test page
             firefox.blocking_navigate_and_get_source(test_server.get_url("/simple"), timeout=15)
-            time.sleep(2)
+            firefox.poll_events()
 
             # Should have captured some URLs
             fetched_urls = firefox.get_fetched_urls()
@@ -180,7 +180,7 @@ def test_request_logging_disable_clears_cache():
             # Re-enable and verify it still works
             firefox.enable_request_logging()
             firefox.blocking_navigate_and_get_source(test_server.get_url("/javascript"), timeout=15)
-            time.sleep(2)
+            firefox.poll_events()
 
             fetched_urls_after_reenable = firefox.get_fetched_urls()
             assert len(fetched_urls_after_reenable) > 0, "Should capture requests after re-enabling"
@@ -213,18 +213,18 @@ def test_request_logging_multiple_tabs_independent():
 
             # Create a second tab
             tab2 = firefox.new_tab(test_server.get_url("/javascript"))
-            time.sleep(1)
+            firefox.poll_events()
 
             # Enable logging on main tab only
             firefox.enable_request_logging()
 
             # Navigate main tab - should be logged
             firefox.blocking_navigate_and_get_source(test_server.get_url("/dom"), timeout=15)
-            time.sleep(2)
+            firefox.poll_events()
 
             # Navigate tab2 - should NOT be logged (logging not enabled on tab2)
             tab2.blocking_navigate_and_get_source(test_server.get_url("/cookies"), timeout=15)
-            time.sleep(2)
+            tab2.poll_events()
 
             # Check main tab has captured URLs
             main_tab_urls = firefox.get_fetched_urls()
@@ -241,7 +241,7 @@ def test_request_logging_multiple_tabs_independent():
 
             # Navigate tab2 again - should now be logged
             tab2.blocking_navigate_and_get_source(test_server.get_url("/form"), timeout=15)
-            time.sleep(2)
+            tab2.poll_events()
 
             # Check tab2 now has captured URLs
             tab2_urls_after = tab2.get_fetched_urls()
@@ -288,7 +288,6 @@ def test_request_logging_multiple_tabs_all_enabled():
             # Create three tabs
             tab2 = firefox.new_tab(test_server.get_url("/javascript"))
             tab3 = firefox.new_tab(test_server.get_url("/cookies"))
-            time.sleep(1)
 
             # Enable logging on all tabs
             firefox.enable_request_logging()
@@ -301,7 +300,7 @@ def test_request_logging_multiple_tabs_all_enabled():
             tab3.blocking_navigate_and_get_source(test_server.get_url("/form"), timeout=15)
 
             # Wait for all to complete
-            time.sleep(3)
+            tab3.poll_events()
 
             # Get URLs from all tabs
             tab1_urls = firefox.get_fetched_urls()
@@ -358,7 +357,6 @@ def test_request_logging_disable_one_tab_others_continue():
 
             # Create two tabs
             tab2 = firefox.new_tab(test_server.get_url("/javascript"))
-            time.sleep(1)
 
             # Enable logging on both tabs
             firefox.enable_request_logging()
@@ -367,7 +365,7 @@ def test_request_logging_disable_one_tab_others_continue():
             # Navigate both tabs
             firefox.blocking_navigate_and_get_source(test_server.get_url("/simple"), timeout=15)
             tab2.blocking_navigate_and_get_source(test_server.get_url("/dom"), timeout=15)
-            time.sleep(2)
+            firefox.poll_events()
 
             # Both should have content
             tab1_urls = firefox.get_fetched_urls()
@@ -385,7 +383,7 @@ def test_request_logging_disable_one_tab_others_continue():
             # Navigate both tabs again
             firefox.blocking_navigate_and_get_source(test_server.get_url("/cookies"), timeout=15)
             tab2.blocking_navigate_and_get_source(test_server.get_url("/form"), timeout=15)
-            time.sleep(2)
+            firefox.poll_events()
 
             # Tab1 should have no URLs (logging disabled and cache cleared)
             tab1_urls_after = firefox.get_fetched_urls()
@@ -427,7 +425,6 @@ def test_request_logging_clear_cache_one_tab_others_unaffected():
 
             # Create two tabs
             tab2 = firefox.new_tab(test_server.get_url("/javascript"))
-            time.sleep(1)
 
             # Enable logging on both tabs
             firefox.enable_request_logging()
@@ -436,7 +433,7 @@ def test_request_logging_clear_cache_one_tab_others_unaffected():
             # Navigate both tabs
             firefox.blocking_navigate_and_get_source(test_server.get_url("/simple"), timeout=15)
             tab2.blocking_navigate_and_get_source(test_server.get_url("/dom"), timeout=15)
-            time.sleep(2)
+            firefox.poll_events()
 
             # Both should have content
             tab1_urls_before = firefox.get_fetched_urls()
@@ -466,7 +463,7 @@ def test_request_logging_clear_cache_one_tab_others_unaffected():
 
             # Tab1 should still be logging (just cache was cleared)
             firefox.blocking_navigate_and_get_source(test_server.get_url("/cookies"), timeout=15)
-            time.sleep(2)
+            firefox.poll_events()
 
             tab1_urls_new = firefox.get_fetched_urls()
             assert len(tab1_urls_new) > 0, "Tab1 should capture new requests after cache clear"
@@ -496,7 +493,6 @@ def test_request_logging_multiple_tabs_content_verification():
 
             # Create a second tab
             tab2 = firefox.new_tab(test_server.get_url("/javascript"))
-            time.sleep(1)
 
             # Enable logging on both tabs
             firefox.enable_request_logging()
@@ -505,7 +501,7 @@ def test_request_logging_multiple_tabs_content_verification():
             # Navigate to different pages with distinct content
             firefox.blocking_navigate_and_get_source(test_server.get_url("/simple"), timeout=15)
             tab2.blocking_navigate_and_get_source(test_server.get_url("/javascript"), timeout=15)
-            time.sleep(2)
+            firefox.poll_events()
 
             # Get content from both tabs
             tab1_urls = firefox.get_fetched_urls()
@@ -577,7 +573,8 @@ def test_request_logging_async_fetch():
             firefox.blocking_navigate_and_get_source(test_server.get_url("/async-fetch"), timeout=15)
 
             # Wait for async fetch to complete (page waits 500ms then fetches)
-            time.sleep(3)
+            time.sleep(1)
+            firefox.poll_events()
 
             # Get fetched URLs
             fetched_urls = firefox.get_fetched_urls()
@@ -636,7 +633,8 @@ def test_request_logging_async_xhr():
             firefox.blocking_navigate_and_get_source(test_server.get_url("/async-xhr"), timeout=15)
 
             # Wait for async XHR to complete
-            time.sleep(3)
+            time.sleep(1)
+            firefox.poll_events()
 
             # Get fetched URLs
             fetched_urls = firefox.get_fetched_urls()
@@ -689,7 +687,9 @@ def test_request_logging_multiple_async_requests():
 
             # Wait for all async fetches to complete
             # Fetch 1: immediate, Fetch 2: after 500ms, Fetch 3: after 1000ms + 1s API delay
-            time.sleep(5)
+            for _ in range(5):
+                firefox.poll_events()
+                time.sleep(0.5)
 
             # Get fetched URLs
             fetched_urls = firefox.get_fetched_urls()
@@ -763,7 +763,8 @@ def test_request_logging_async_with_navigation():
 
             # Navigate to first async page
             firefox.blocking_navigate_and_get_source(test_server.get_url("/async-fetch"), timeout=15)
-            time.sleep(3)
+            time.sleep(1)
+            firefox.poll_events()
 
             # Get URLs from first page
             first_page_urls = firefox.get_fetched_urls()
@@ -774,7 +775,8 @@ def test_request_logging_async_with_navigation():
 
             # Navigate to second async page (XHR)
             firefox.blocking_navigate_and_get_source(test_server.get_url("/async-xhr"), timeout=15)
-            time.sleep(3)
+            time.sleep(1)
+            firefox.poll_events()
 
             # Get URLs after second navigation
             second_page_urls = firefox.get_fetched_urls()
@@ -792,7 +794,9 @@ def test_request_logging_async_with_navigation():
 
             # Navigate to third async page
             firefox.blocking_navigate_and_get_source(test_server.get_url("/async-multiple"), timeout=15)
-            time.sleep(5)
+            for _ in range(5):
+                firefox.poll_events()
+                time.sleep(0.5)
 
             # After clear, should only have URLs from third page
             third_page_urls = firefox.get_fetched_urls()
@@ -830,7 +834,6 @@ def test_request_logging_async_multiple_tabs_independent():
 
             # Create second tab
             tab2 = firefox.new_tab(test_server.get_url("/simple"))
-            time.sleep(1)
 
             # Enable logging on both tabs
             firefox.enable_request_logging()
@@ -841,7 +844,9 @@ def test_request_logging_async_multiple_tabs_independent():
             tab2.blocking_navigate_and_get_source(test_server.get_url("/async-xhr"), timeout=15)
 
             # Wait for async requests
-            time.sleep(4)
+            time.sleep(1)
+            firefox.poll_events()
+            tab2.poll_events()
 
             # Get URLs from both tabs
             tab1_urls = firefox.get_fetched_urls()

@@ -1059,50 +1059,56 @@ class WebDriverBiDiMixin:
             self.log.warning("Failed to end session: {}".format(e))
             return False
     
-    def bidi_subscribe(self, events: List[str]) -> bool:
+    def bidi_subscribe(self, events: List[str], contexts: List[str] = None) -> bool:
         """
         Subscribe to WebDriver-BiDi events.
-        
+
         Args:
             events: List of event names to subscribe to
-            
+            contexts: Optional list of browsing context IDs to filter events to
+
         Returns:
             True if successful, False otherwise
         """
         try:
+            params = {'events': events}
+            if contexts:
+                params['contexts'] = contexts
+
             response = self.manager._send_message({
                 'method': 'session.subscribe',
-                'params': {
-                    'events': events
-                }
+                'params': params
             })
-            
+
             return response.get('type') == 'success'
-                
+
         except Exception as e:
             self.log.warning("Failed to subscribe to events: {}".format(e))
             return False
     
-    def bidi_unsubscribe(self, events: List[str]) -> bool:
+    def bidi_unsubscribe(self, events: List[str], contexts: List[str] = None) -> bool:
         """
         Unsubscribe from WebDriver-BiDi events.
-        
+
         Args:
             events: List of event names to unsubscribe from
-            
+            contexts: Optional list of browsing context IDs to filter unsubscription
+
         Returns:
             True if successful, False otherwise
         """
         try:
+            params = {'events': events}
+            if contexts:
+                params['contexts'] = contexts
+
             response = self.manager._send_message({
                 'method': 'session.unsubscribe',
-                'params': {
-                    'events': events
-                }
+                'params': params
             })
-            
+
             return response.get('type') == 'success'
-                
+
         except Exception as e:
             self.log.warning("Failed to unsubscribe from events: {}".format(e))
             return False

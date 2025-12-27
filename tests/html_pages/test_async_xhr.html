@@ -1,0 +1,35 @@
+<html>
+<head>
+    <title>Async XHR Test Page</title>
+    <script>
+        // Perform async XMLHttpRequest after page load
+        window.addEventListener('load', function() {
+            console.log('Page loaded, starting async XHR...');
+
+            // Make XHR after 500ms delay
+            setTimeout(function() {
+                var xhr = new XMLHttpRequest();
+                xhr.open('GET', '/api/text', true);
+                xhr.onload = function() {
+                    if (xhr.status === 200) {
+                        console.log('XHR response:', xhr.responseText);
+                        document.getElementById('result').textContent = xhr.responseText;
+                        document.getElementById('status').textContent = 'XHR completed!';
+                    }
+                };
+                xhr.onerror = function() {
+                    console.error('XHR error');
+                    document.getElementById('status').textContent = 'XHR failed!';
+                };
+                xhr.send();
+            }, 500);
+        });
+    </script>
+</head>
+<body>
+    <h1>Async XHR Test Page</h1>
+    <p>This page performs an async XMLHttpRequest after page load.</p>
+    <p>Status: <span id="status">Loading...</span></p>
+    <p>Result: <span id="result"></span></p>
+</body>
+</html>

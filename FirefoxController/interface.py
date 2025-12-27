@@ -10,7 +10,6 @@ similar to ChromeController's ChromeRemoteDebugInterface.
 import logging
 import time
 import json
-import threading
 import base64
 from typing import Optional, Dict, Any, List, Union
 
@@ -68,13 +67,10 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
         # The manager tracks all contexts, this interface tracks its own
         self.active_browsing_context = None  # Will be set when associated with a context
 
-        # Request logging state (per-tab)
+        # Request logging state (per-tab, single-threaded)
         self._request_logging_enabled = False
         self._request_log_cache = {}  # url -> {'url': url, 'mimetype': str, 'content': bytes}
         self._data_collector_id = None
-        self._pending_requests = {}  # request_id -> request_metadata
-        self._event_polling_thread = None
-        self._stop_event_polling = False
     
     def __enter__(self):
         """Context manager entry"""
@@ -95,12 +91,12 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
     def blocking_navigate_and_get_source(self, url: str, timeout: int = 30) -> str:
         """
         Navigate to a URL and get the page source (blocking).
-        
+
         This is similar to ChromeController's blocking_navigate_and_get_source.
         """
-        # Navigate to URL using WebDriver BiDi
-        self.manager.navigate(url, timeout)
-        
+        # Navigate to URL using THIS tab's context
+        self.blocking_navigate(url, timeout)
+
         # Get page source
         return self.get_page_source()
     
@@ -537,33 +533,92 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
     # Request Logging Methods
     # ========================================================================
 
-    def _event_polling_worker(self):
-        """Background worker that processes network events from the event queue"""
-        self.log.debug("Event polling worker started")
+    def process_events(self, max_events: int = 100) -> int:
+        """
+        Process pending events from this tab's event queue.
 
-        while not self._stop_event_polling:
+        This should be called periodically when request logging is enabled
+        to process network events and capture response data.
+
+        Args:
+            max_events: Maximum number of events to process in one call
+
+        Returns:
+            Number of events processed
+        """
+        # Only process if logging is enabled for this tab
+        if not self._request_logging_enabled:
+            return 0
+
+        events_processed = 0
+        context = self.active_browsing_context or self.manager.browsing_context
+
+        # Get this tab's event queue
+        event_queue = self.manager.get_event_queue_for_context(context)
+
+        for _ in range(max_events):
             try:
-                # Get event from queue with timeout
-                try:
-                    event = self.manager.event_queue.get(timeout=0.5)
-                except:
-                    # Queue empty or timeout - just continue
-                    continue
+                # Non-blocking get from this tab's queue
+                event = event_queue.get_nowait()
+
+                method = event.get("method")
+                self.log.debug("process_events: Got event with method={}".format(method))
 
                 # Check if this is a network.responseCompleted event
-                if event.get("method") == "network.responseCompleted":
-                    self._handle_response_completed_event(event.get("params", {}))
+                if method == "network.responseCompleted":
+                    params = event.get("params", {})
+                    # Process this event (it's already in the right queue for this tab)
+                    self._handle_response_completed_event(params)
+                    events_processed += 1
 
+            except:
+                # Queue is empty
+                break
+
+        if events_processed > 0:
+            self.log.debug("process_events: Processed {} network events".format(events_processed))
+
+        return events_processed
+
+    def poll_events(self, timeout: float = 0.1) -> int:
+        """
+        Poll for new events and process them for ALL tabs.
+
+        This calls the manager's poll_for_events() to read from WebSocket,
+        then processes network events for ALL tabs that have logging enabled.
+
+        Args:
+            timeout: How long to wait for events (seconds)
+
+        Returns:
+            Total number of events processed across all tabs
+        """
+        # Poll WebSocket for new events (distributes to per-tab queues)
+        events_received = self.manager.poll_for_events(timeout)
+        self.log.debug("poll_events: Received {} events from WebSocket".format(events_received))
+
+        # Process events for ALL tabs with logging enabled
+        total_processed = 0
+        with self.manager._logging_interfaces_lock:
+            # Create a copy of the list to avoid holding lock during processing
+            interfaces_to_process = list(self.manager._logging_interfaces)
+
+        for interface in interfaces_to_process:
+            try:
+                processed = interface.process_events()
+                total_processed += processed
             except Exception as e:
-                # Log errors but continue processing
-                self.log.debug("Error processing event: {}".format(e))
-                time.sleep(0.1)
-                continue
+                self.log.warning("Error processing events for interface: {}".format(e))
 
-        self.log.debug("Event polling worker stopped")
+        self.log.debug("poll_events: Processed {} total network events across all tabs".format(total_processed))
+
+        return total_processed
 
     def _handle_response_completed_event(self, params: Dict[str, Any]):
-        """Handle a network.responseCompleted event"""
+        """Handle a network.responseCompleted event
+
+        Note: Caller should have already verified this event belongs to our context
+        """
         try:
             # Extract request and response information
             request_data = params.get("request", {})
@@ -585,21 +640,40 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
 
             # Fetch the response data using network.getData
             try:
+                # Use our data collector to get the response body
+                params = {
+                    'dataType': 'response',
+                    'request': request_id
+                }
+                # Include collector ID to ensure we get data from this tab's collector
+                if self._data_collector_id:
+                    params['collector'] = self._data_collector_id
+
                 data_response = self.manager._send_message({
                     'method': 'network.getData',
-                    'params': {
-                        'dataType': 'response',
-                        'request': request_id
-                    }
+                    'params': params
                 })
 
                 # Extract the response body
                 if data_response.get("type") == "success" and "result" in data_response:
                     result = data_response["result"]
 
-                    # The data is base64 encoded in the "data" field
-                    if "data" in result:
-                        content = base64.b64decode(result["data"])
+                    # The response format is {"bytes": {"type": "string"|"base64", "value": "..."}}
+                    if "bytes" in result:
+                        bytes_value = result["bytes"]
+                        value_type = bytes_value.get("type")
+
+                        if value_type == "string":
+                            # Data is a string value, encode to bytes
+                            content = bytes_value.get("value", "").encode('utf-8')
+                        elif value_type == "base64":
+                            # Data is base64 encoded
+                            import base64
+                            content = base64.b64decode(bytes_value.get("value", ""))
+                        else:
+                            # Unknown format
+                            self.log.warning("Unknown bytes type: {}".format(value_type))
+                            return
 
                         # Store in cache
                         self._request_log_cache[url] = {
@@ -621,6 +695,7 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
         Enable request logging for this browsing context.
 
         This will start capturing all HTTP(s) responses fetched by the browser.
+        You must call poll_events() periodically to process captured responses.
         """
         if self._request_logging_enabled:
             self.log.warning("Request logging already enabled")
@@ -645,19 +720,28 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
             if response.get("type") == "success" and "result" in response:
                 self._data_collector_id = response["result"].get("collector")
 
-            # Subscribe to network.responseCompleted events
-            self.bidi_subscribe(["network.responseCompleted"])
+            # Use global subscription approach for multi-tab support
+            with self.manager.network_subscription_lock:
+                if not self.manager.network_events_subscribed:
+                    # First tab to enable logging - subscribe globally
+                    self.bidi_subscribe(["network.responseCompleted"])
+                    self.manager.network_events_subscribed = True
+                    self.log.debug("Subscribed to network events globally")
 
-            # Start event polling thread
-            self._stop_event_polling = False
-            self._event_polling_thread = threading.Thread(
-                target=self._event_polling_worker,
-                daemon=True
-            )
-            self._event_polling_thread.start()
+                self.manager.network_logging_refs += 1
+                self.log.debug("Network logging refs: {}".format(self.manager.network_logging_refs))
+
+            # Register this interface for automatic polling
+            with self.manager._logging_interfaces_lock:
+                if self not in self.manager._logging_interfaces:
+                    self.manager._logging_interfaces.append(self)
+
+            # Track this context as having logging enabled
+            with self.manager.logging_contexts_lock:
+                self.manager.logging_enabled_contexts.add(context)
 
             self._request_logging_enabled = True
-            self.log.info("Request logging enabled")
+            self.log.info("Request logging enabled - call poll_events() to process responses")
 
         except Exception as e:
             self.log.error("Failed to enable request logging: {}".format(e))
@@ -673,14 +757,26 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
             return
 
         try:
-            # Stop event polling thread
-            self._stop_event_polling = True
-            if self._event_polling_thread:
-                self._event_polling_thread.join(timeout=2)
-                self._event_polling_thread = None
+            # Unregister this interface from automatic polling
+            with self.manager._logging_interfaces_lock:
+                if self in self.manager._logging_interfaces:
+                    self.manager._logging_interfaces.remove(self)
 
-            # Unsubscribe from events
-            self.bidi_unsubscribe(["network.responseCompleted"])
+            # Remove this context from logging enabled set
+            context = self.active_browsing_context or self.manager.browsing_context
+            with self.manager.logging_contexts_lock:
+                self.manager.logging_enabled_contexts.discard(context)
+
+            # Use global subscription approach for multi-tab support
+            with self.manager.network_subscription_lock:
+                self.manager.network_logging_refs -= 1
+                self.log.debug("Network logging refs: {}".format(self.manager.network_logging_refs))
+
+                if self.manager.network_logging_refs == 0 and self.manager.network_events_subscribed:
+                    # Last tab to disable logging - unsubscribe globally
+                    self.bidi_unsubscribe(["network.responseCompleted"])
+                    self.manager.network_events_subscribed = False
+                    self.log.debug("Unsubscribed from network events globally")
 
             # Remove data collector
             if self._data_collector_id:
@@ -698,7 +794,6 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
 
             # Clear cache
             self._request_log_cache.clear()
-            self._pending_requests.clear()
 
             self._request_logging_enabled = False
             self.log.info("Request logging disabled")
@@ -736,5 +831,4 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
         to many pages.
         """
         self._request_log_cache.clear()
-        self._pending_requests.clear()
         self.log.debug("Request log cache cleared")

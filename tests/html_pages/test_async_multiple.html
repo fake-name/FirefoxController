@@ -1,0 +1,68 @@
+<html>
+<head>
+    <title>Multiple Async Requests Test Page</title>
+    <script>
+        // Perform multiple async fetches after page load
+        window.addEventListener('load', function() {
+            console.log('Page loaded, starting multiple async fetches...');
+
+            var fetchCount = 0;
+            var totalFetches = 3;
+
+            function updateStatus() {
+                fetchCount++;
+                document.getElementById('status').textContent =
+                    'Completed ' + fetchCount + ' of ' + totalFetches + ' fetches';
+            }
+
+            // Fetch 1: Immediate
+            fetch('/api/data')
+                .then(response => response.json())
+                .then(data => {
+                    console.log('Fetch 1 data:', data);
+                    document.getElementById('result1').textContent = JSON.stringify(data);
+                    updateStatus();
+                });
+
+            // Fetch 2: After 500ms
+            setTimeout(function() {
+                fetch('/api/text')
+                    .then(response => response.text())
+                    .then(data => {
+                        console.log('Fetch 2 data:', data);
+                        document.getElementById('result2').textContent = data;
+                        updateStatus();
+                    });
+            }, 500);
+
+            // Fetch 3: After 1000ms (delayed API)
+            setTimeout(function() {
+                fetch('/api/delayed')
+                    .then(response => response.json())
+                    .then(data => {
+                        console.log('Fetch 3 data:', data);
+                        document.getElementById('result3').textContent = JSON.stringify(data);
+                        updateStatus();
+                    });
+            }, 1000);
+        });
+    </script>
+</head>
+<body>
+    <h1>Multiple Async Requests Test Page</h1>
+    <p>This page performs multiple async fetches at different times.</p>
+    <p>Status: <span id="status">Loading...</span></p>
+    <div>
+        <h3>Fetch 1 (immediate):</h3>
+        <p id="result1">Waiting...</p>
+    </div>
+    <div>
+        <h3>Fetch 2 (after 500ms):</h3>
+        <p id="result2">Waiting...</p>
+    </div>
+    <div>
+        <h3>Fetch 3 (after 1000ms, delayed API):</h3>
+        <p id="result3">Waiting...</p>
+    </div>
+</body>
+</html>

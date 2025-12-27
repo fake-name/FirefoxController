@@ -97,9 +97,25 @@ class FirefoxExecutionManager:
         # Temporary profile directory
         self.temp_profile = None
 
-        # Event queue for handling asynchronous events
-        self.event_queue = queue.Queue()
-        self.event_queue_lock = threading.Lock()
+        # Per-tab event queues for handling asynchronous events
+        self.event_queues = {}  # context_id -> queue.Queue()
+        self.event_queues_lock = threading.Lock()
+
+        # Thread safety for ExecutionManager (shared across tabs)
+        self.ws_lock = threading.Lock()  # Protects WebSocket send/recv
+
+        # Track global network event subscription (shared across all tabs)
+        self.network_events_subscribed = False
+        self.network_logging_refs = 0  # Count of tabs with logging enabled
+        self.network_subscription_lock = threading.Lock()
+
+        # Track which contexts have logging enabled
+        self.logging_enabled_contexts = set()
+        self.logging_contexts_lock = threading.Lock()
+
+        # Track interface instances with logging enabled for automatic polling
+        self._logging_interfaces = []  # List of interface instances
+        self._logging_interfaces_lock = threading.Lock()
         
     def _create_profile(self) -> str:
         """Create a temporary Firefox profile with required preferences"""
@@ -292,60 +308,148 @@ user_pref("devtools.debugger.remote-host", "localhost");
             raise FirefoxCommunicationsError("Failed to initialize WebDriver BiDi connection: {}".format(e))
     
     def _send_message(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        """Send a message to Firefox and wait for response"""
+        """Send a message to Firefox and wait for response (thread-safe)"""
         if not self.ws_connection:
             raise FirefoxCommunicationsError("WebSocket not connected")
-        
-        try:
-            # Always assign a new message ID to avoid collisions
-            self.msg_id += 1
-            message["id"] = self.msg_id
-            
-            expected_id = message["id"]
-            
-            message_str = json.dumps(message)
-            self.log.debug("Sending message: {}".format(message_str))
-            
-            self.ws_connection.send(message_str)
-            
-            # Wait for response with matching ID
-            timeout = 10
-            start_time = time.time()
-            
-            while time.time() - start_time < timeout:
-                response_str = self.ws_connection.recv()
-                self.log.debug("Received response: {}".format(response_str))
-                
-                response = json.loads(response_str)
-                
-                # Check if this is the response we're waiting for
-                if response.get("id") == expected_id:
-                    # Check for errors
-                    if "error" in response:
-                        error_msg = response.get("message", "Unknown error")
-                        if isinstance(error_msg, dict):
-                            error_msg = str(error_msg)
-                        raise FirefoxError("Firefox error: {}".format(error_msg))
-                    elif response.get("type") == "error":
-                        error_msg = response.get("message", "Unknown error")
-                        raise FirefoxError("Firefox error: {}".format(error_msg))
-                    
-                    return response
-                
-                # If this is an event or a response for a different message, continue waiting
-                if response.get("type") == "event" or response.get("method"):
-                    # This is an event - put it in the event queue for processing
-                    self.event_queue.put(response)
-                    continue
-                
-                # If this is a response for a different message, we might want to handle it
-                # For now, just continue waiting for our response
-                
-            
-            raise FirefoxCommunicationsError("Timeout waiting for response with ID {}".format(expected_id))
-            
-        except Exception as e:
-            raise FirefoxCommunicationsError("Failed to send message: {}".format(e))
+
+        with self.ws_lock:  # Thread-safe WebSocket access
+            try:
+                # Always assign a new message ID to avoid collisions
+                self.msg_id += 1
+                message["id"] = self.msg_id
+
+                expected_id = message["id"]
+
+                message_str = json.dumps(message)
+                self.log.debug("Sending message: {}".format(message_str))
+
+                self.ws_connection.send(message_str)
+
+                # Wait for response with matching ID
+                timeout = 10
+                start_time = time.time()
+
+                while time.time() - start_time < timeout:
+                    response_str = self.ws_connection.recv()
+                    self.log.debug("Received response: {}".format(response_str))
+
+                    response = json.loads(response_str)
+
+                    # Check if this is the response we're waiting for
+                    if response.get("id") == expected_id:
+                        # Check for errors
+                        if "error" in response:
+                            error_msg = response.get("message", "Unknown error")
+                            if isinstance(error_msg, dict):
+                                error_msg = str(error_msg)
+                            raise FirefoxError("Firefox error: {}".format(error_msg))
+                        elif response.get("type") == "error":
+                            error_msg = response.get("message", "Unknown error")
+                            raise FirefoxError("Firefox error: {}".format(error_msg))
+
+                        return response
+
+                    # If this is an event or a response for a different message, queue it
+                    if response.get("type") == "event" or response.get("method"):
+                        # This is an event - route it to the appropriate per-tab queue
+                        context_id = None
+                        if "params" in response and "context" in response["params"]:
+                            context_id = response["params"]["context"]
+
+                        if context_id:
+                            event_queue = self.get_event_queue_for_context(context_id)
+                            event_queue.put(response)
+                        # If no context, discard it (shouldn't happen for network events)
+                        continue
+
+                    # If this is a response for a different message, we might want to handle it
+                    # For now, just continue waiting for our response
+
+
+                raise FirefoxCommunicationsError("Timeout waiting for response with ID {}".format(expected_id))
+
+            except Exception as e:
+                raise FirefoxCommunicationsError("Failed to send message: {}".format(e))
+
+    def get_event_queue_for_context(self, context_id: str) -> queue.Queue:
+        """Get or create the event queue for a specific browsing context."""
+        with self.event_queues_lock:
+            if context_id not in self.event_queues:
+                self.event_queues[context_id] = queue.Queue()
+            return self.event_queues[context_id]
+
+    def poll_for_events(self, timeout: float = 0.1) -> int:
+        """
+        Poll WebSocket for events without sending a message (thread-safe).
+
+        This reads from the WebSocket and distributes events to per-tab queues.
+        Useful for capturing async events like network.responseCompleted.
+
+        Args:
+            timeout: How long to wait for events (seconds)
+
+        Returns:
+            Number of events received
+        """
+        if not self.ws_connection:
+            return 0
+
+        events_received = 0
+
+        with self.ws_lock:  # Thread-safe WebSocket access
+            try:
+                # Set a short timeout for polling
+                original_timeout = self.ws_connection.gettimeout()
+                self.ws_connection.settimeout(timeout)
+
+                try:
+                    while True:
+                        response_str = self.ws_connection.recv()
+                        if not response_str:
+                            break
+
+                        response = json.loads(response_str)
+                        self.log.debug("Polled event/response: {}".format(response_str[:200]))
+
+                        # Distribute events to the correct per-tab queue
+                        if response.get("type") == "event" or response.get("method"):
+                            # Extract the context from the event if available
+                            context_id = None
+                            if "params" in response and "context" in response["params"]:
+                                context_id = response["params"]["context"]
+
+                            # If we have a context, queue it for that specific tab
+                            if context_id:
+                                event_queue = self.get_event_queue_for_context(context_id)
+                                event_queue.put(response)
+                                events_received += 1
+                            else:
+                                # No context - this is a global event, queue for all tabs
+                                # or just log and ignore
+                                self.log.debug("Received event without context: {}".format(response.get("method")))
+                        elif "id" in response:
+                            # This is a response to a command - these aren't context-specific
+                            # Put in the first available queue or handle separately
+                            # For now, just log
+                            self.log.debug("Received command response during polling: {}".format(response.get("id")))
+
+                except websocket.WebSocketTimeoutException:
+                    # Timeout is expected when polling - no more events available
+                    pass
+                except Exception as e:
+                    # Other errors - log and continue
+                    self.log.debug("Error polling for events: {}".format(e))
+                finally:
+                    # Restore original timeout
+                    try:
+                        self.ws_connection.settimeout(original_timeout)
+                    except:
+                        pass
+
+            except Exception as e:
+                self.log.debug("Error in poll_for_events: {}".format(e))
+
+        return events_received
     
     def _receive_event(self, event_type: str, params: dict, timeout: int = 5) -> Optional[Dict[str, Any]]:
         """Receive a specific event from the WebSocket"""
@@ -487,14 +591,14 @@ user_pref("devtools.debugger.remote-host", "localhost");
             additional_options=self.additional_options,
             profile_dir=self.profile_dir
         )
-        
+
         # Configure the interface for this specific context
         interface.manager = self  # Share the same execution manager
         interface.active_browsing_context = context_id
-        
-        # Update the manager's browsing context tracking
-        self.browsing_context = context_id
-        
+
+        # Note: Don't update self.browsing_context here - it belongs to the default tab
+        # Each interface tracks its own context via active_browsing_context
+
         return interface
 
     def _list_browsing_contexts(self):

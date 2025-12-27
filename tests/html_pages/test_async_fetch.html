@@ -1,0 +1,32 @@
+<html>
+<head>
+    <title>Async Fetch Test Page</title>
+    <script>
+        // Perform async fetch after page load
+        window.addEventListener('load', function() {
+            console.log('Page loaded, starting async fetch...');
+
+            // Fetch data after 500ms delay
+            setTimeout(function() {
+                fetch('/api/data')
+                    .then(response => response.json())
+                    .then(data => {
+                        console.log('Fetched data:', data);
+                        document.getElementById('result').textContent = JSON.stringify(data);
+                        document.getElementById('status').textContent = 'Fetch completed!';
+                    })
+                    .catch(error => {
+                        console.error('Fetch error:', error);
+                        document.getElementById('status').textContent = 'Fetch failed!';
+                    });
+            }, 500);
+        });
+    </script>
+</head>
+<body>
+    <h1>Async Fetch Test Page</h1>
+    <p>This page performs an async fetch after page load.</p>
+    <p>Status: <span id="status">Loading...</span></p>
+    <p>Result: <span id="result"></span></p>
+</body>
+</html>
