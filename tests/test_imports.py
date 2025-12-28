@@ -55,7 +55,7 @@ def test_utility_functions_import():
 def test_interface_methods():
     """Test that the interface has all expected methods"""
     from FirefoxController import FirefoxRemoteDebugInterface
-    
+
     interface = FirefoxRemoteDebugInterface
     expected_methods = [
         'blocking_navigate_and_get_source',
@@ -76,9 +76,41 @@ def test_interface_methods():
         'scroll_page',
         'get_rendered_page_source',
         'wait_for_dom_idle',
-        'new_tab'
+        'new_tab',
+        # XHR fetch (ChromeController parity)
+        'xhr_fetch',
+        # XPath element selection (ChromeController parity)
+        'get_element_by_xpath',
+        'get_elements_by_xpath',
+        'select_input_by_xpath',
+        'click_element_by_xpath',
+        'get_input_value_by_xpath',
+        'set_input_value_by_xpath',
+        # Keyboard event methods (ChromeController parity)
+        'dispatch_key_event',
+        'type_text',
+        'type_text_in_input',
+        'send_key_combination',
+        'press_enter',
+        'press_tab',
+        'press_escape',
+        # Mouse event methods (ChromeController parity)
+        'get_element_coordinates_by_xpath',
+        'get_element_coordinates',
+        'move_mouse_to',
+        'move_mouse_to_element_by_xpath',
+        'move_mouse_to_element',
+        'mouse_click',
+        'mouse_click_element_by_xpath',
+        'mouse_click_element',
+        'mouse_double_click',
+        'mouse_double_click_element_by_xpath',
+        'mouse_right_click_element_by_xpath',
+        'mouse_drag',
+        'mouse_drag_element_by_xpath',
+        'hover_element_by_xpath',
     ]
-    
+
     for method in expected_methods:
         assert hasattr(interface, method), "Method {} missing from FirefoxRemoteDebugInterface".format(method)
 

@@ -832,3 +832,1084 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
         """
         self._request_log_cache.clear()
         self.log.debug("Request log cache cleared")
+
+    # ========================================================================
+    # XHR Fetch Methods
+    # ========================================================================
+
+    def xhr_fetch(self, url: str, headers: Dict[str, str] = None,
+                  post_data: str = None, post_type: str = None) -> Dict[str, Any]:
+        """
+        Execute an XMLHttpRequest() for content at the specified URL.
+
+        This method executes a synchronous XMLHttpRequest in the browser context,
+        allowing you to fetch content from URLs. Similar to ChromeController's xhr_fetch.
+
+        Note: This will be affected by the same-origin policy of the current page,
+        so it can fail if you are requesting content from another domain and
+        the current site has restrictive same-origin policies (which is very common).
+
+        Args:
+            url: URL to fetch
+            headers: Optional dictionary of header name:value pairs
+            post_data: Optional POST data (must be pre-encoded)
+            post_type: Optional Content-Type for POST requests
+
+        Returns:
+            Dictionary containing:
+                - url: The requested URL
+                - headers: Request headers
+                - resp_headers: Response headers as string
+                - post: POST data if any
+                - response: Response text
+                - mimetype: Response Content-Type
+                - code: HTTP status code
+        """
+        try:
+            js_script = """
+                function(url, headers, post_data, post_type) {
+                    var req = new XMLHttpRequest();
+                    if (post_data) {
+                        req.open("POST", url, false);
+                        if (post_type) {
+                            req.setRequestHeader("Content-Type", post_type);
+                        }
+                    } else {
+                        req.open("GET", url, false);
+                    }
+
+                    if (headers) {
+                        let entries = Object.entries(headers);
+                        for (let idx = 0; idx < entries.length; idx += 1) {
+                            req.setRequestHeader(entries[idx][0], entries[idx][1]);
+                        }
+                    }
+
+                    if (post_data) {
+                        req.send(post_data);
+                    } else {
+                        req.send();
+                    }
+
+                    return {
+                        url: url,
+                        headers: headers,
+                        resp_headers: req.getAllResponseHeaders(),
+                        post: post_data,
+                        response: req.responseText,
+                        mimetype: req.getResponseHeader("Content-Type"),
+                        code: req.status
+                    };
+                }
+            """
+
+            result = self.execute_javascript_function(
+                js_script,
+                [url, headers or {}, post_data, post_type]
+            )
+
+            if result is None:
+                return {
+                    'url': url,
+                    'headers': headers,
+                    'resp_headers': '',
+                    'post': post_data,
+                    'response': '',
+                    'mimetype': None,
+                    'code': 0
+                }
+
+            return result
+
+        except Exception as e:
+            self.log.warning("xhr_fetch failed: {}".format(e))
+            return {
+                'url': url,
+                'headers': headers,
+                'resp_headers': '',
+                'post': post_data,
+                'response': '',
+                'mimetype': None,
+                'code': 0,
+                'error': str(e)
+            }
+
+    # ========================================================================
+    # XPath Element Selection Methods
+    # ========================================================================
+
+    def get_element_by_xpath(self, xpath: str) -> Optional[Dict[str, Any]]:
+        """
+        Find a DOM element using an XPath expression.
+
+        Args:
+            xpath: XPath expression to evaluate
+
+        Returns:
+            Dictionary containing element information, or None if not found.
+            The dictionary includes:
+                - found: True if element was found
+                - tagName: Element tag name
+                - id: Element ID
+                - className: Element class name
+                - textContent: First 100 chars of text content
+                - value: Input value (for form elements)
+                - type: Input type (for input elements)
+                - outerHTML: First 500 chars of outer HTML
+        """
+        try:
+            script = """
+                function(xpath) {
+                    try {
+                        let result = document.evaluate(
+                            xpath,
+                            document,
+                            null,
+                            XPathResult.FIRST_ORDERED_NODE_TYPE,
+                            null
+                        );
+                        let element = result.singleNodeValue;
+                        if (element) {
+                            return {
+                                found: true,
+                                tagName: element.tagName || '',
+                                id: element.id || '',
+                                className: element.className || '',
+                                textContent: (element.textContent || '').substring(0, 100),
+                                value: element.value !== undefined ? element.value : null,
+                                type: element.type || null,
+                                outerHTML: (element.outerHTML || '').substring(0, 500)
+                            };
+                        }
+                        return { found: false };
+                    } catch (e) {
+                        return { found: false, error: e.message };
+                    }
+                }
+            """
+
+            result = self.execute_javascript_function(script, [xpath])
+
+            if result and result.get("found"):
+                return result
+            else:
+                return None
+
+        except Exception as e:
+            self.log.warning("Failed to get element by xpath: {}".format(e))
+            return None
+
+    def get_elements_by_xpath(self, xpath: str, max_results: int = 100) -> List[Dict[str, Any]]:
+        """
+        Find all DOM elements matching an XPath expression.
+
+        Args:
+            xpath: XPath expression to evaluate
+            max_results: Maximum number of results to return (default 100)
+
+        Returns:
+            List of dictionaries containing element information
+        """
+        try:
+            script = """
+                function(xpath, maxResults) {
+                    try {
+                        let result = document.evaluate(
+                            xpath,
+                            document,
+                            null,
+                            XPathResult.ORDERED_NODE_ITERATOR_TYPE,
+                            null
+                        );
+                        let elements = [];
+                        let element;
+                        let count = 0;
+                        while ((element = result.iterateNext()) && count < maxResults) {
+                            elements.push({
+                                tagName: element.tagName || '',
+                                id: element.id || '',
+                                className: element.className || '',
+                                textContent: (element.textContent || '').substring(0, 100),
+                                value: element.value !== undefined ? element.value : null,
+                                type: element.type || null,
+                                outerHTML: (element.outerHTML || '').substring(0, 500)
+                            });
+                            count++;
+                        }
+                        return elements;
+                    } catch (e) {
+                        return [];
+                    }
+                }
+            """
+
+            result = self.execute_javascript_function(script, [xpath, max_results])
+            return result if result else []
+
+        except Exception as e:
+            self.log.warning("Failed to get elements by xpath: {}".format(e))
+            return []
+
+    def select_input_by_xpath(self, xpath: str) -> bool:
+        """
+        Select (focus) an input element using an XPath expression.
+
+        This method finds an input element using XPath and gives it focus,
+        preparing it for keyboard input.
+
+        Args:
+            xpath: XPath expression that identifies the input element
+
+        Returns:
+            True if the element was found and focused, False otherwise
+        """
+        try:
+            script = """
+                function(xpath) {
+                    try {
+                        let result = document.evaluate(
+                            xpath,
+                            document,
+                            null,
+                            XPathResult.FIRST_ORDERED_NODE_TYPE,
+                            null
+                        );
+                        let element = result.singleNodeValue;
+                        if (element && typeof element.focus === 'function') {
+                            element.focus();
+                            // For input elements, also select any existing text
+                            if (typeof element.select === 'function') {
+                                element.select();
+                            }
+                            return true;
+                        }
+                        return false;
+                    } catch (e) {
+                        return false;
+                    }
+                }
+            """
+
+            result = self.execute_javascript_function(script, [xpath])
+            return bool(result)
+
+        except Exception as e:
+            self.log.warning("Failed to select input by xpath: {}".format(e))
+            return False
+
+    def click_element_by_xpath(self, xpath: str) -> bool:
+        """
+        Click a DOM element using an XPath expression.
+
+        Args:
+            xpath: XPath expression that identifies the element to click
+
+        Returns:
+            True if the element was found and clicked, False otherwise
+        """
+        try:
+            script = """
+                function(xpath) {
+                    try {
+                        let result = document.evaluate(
+                            xpath,
+                            document,
+                            null,
+                            XPathResult.FIRST_ORDERED_NODE_TYPE,
+                            null
+                        );
+                        let element = result.singleNodeValue;
+                        if (element) {
+                            element.click();
+                            return true;
+                        }
+                        return false;
+                    } catch (e) {
+                        return false;
+                    }
+                }
+            """
+
+            result = self.execute_javascript_function(script, [xpath])
+            return bool(result)
+
+        except Exception as e:
+            self.log.warning("Failed to click element by xpath: {}".format(e))
+            return False
+
+    def get_input_value_by_xpath(self, xpath: str) -> Optional[str]:
+        """
+        Get the value of an input element using XPath.
+
+        Args:
+            xpath: XPath expression that identifies the input element
+
+        Returns:
+            The input value as a string, or None if element not found
+        """
+        try:
+            script = """
+                function(xpath) {
+                    try {
+                        let result = document.evaluate(
+                            xpath,
+                            document,
+                            null,
+                            XPathResult.FIRST_ORDERED_NODE_TYPE,
+                            null
+                        );
+                        let element = result.singleNodeValue;
+                        if (element && element.value !== undefined) {
+                            return element.value;
+                        }
+                        return null;
+                    } catch (e) {
+                        return null;
+                    }
+                }
+            """
+
+            return self.execute_javascript_function(script, [xpath])
+
+        except Exception as e:
+            self.log.warning("Failed to get input value by xpath: {}".format(e))
+            return None
+
+    def set_input_value_by_xpath(self, xpath: str, value: str) -> bool:
+        """
+        Set the value of an input element using XPath.
+
+        Note: This sets the value directly via JavaScript, which doesn't
+        trigger keyboard events. Use type_text_in_input() for more realistic
+        input simulation.
+
+        Args:
+            xpath: XPath expression that identifies the input element
+            value: Value to set
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            script = """
+                function(xpath, value) {
+                    try {
+                        let result = document.evaluate(
+                            xpath,
+                            document,
+                            null,
+                            XPathResult.FIRST_ORDERED_NODE_TYPE,
+                            null
+                        );
+                        let element = result.singleNodeValue;
+                        if (element) {
+                            element.value = value;
+                            // Trigger input and change events for frameworks that listen to them
+                            element.dispatchEvent(new Event('input', { bubbles: true }));
+                            element.dispatchEvent(new Event('change', { bubbles: true }));
+                            return true;
+                        }
+                        return false;
+                    } catch (e) {
+                        return false;
+                    }
+                }
+            """
+
+            result = self.execute_javascript_function(script, [xpath, value])
+            return bool(result)
+
+        except Exception as e:
+            self.log.warning("Failed to set input value by xpath: {}".format(e))
+            return False
+
+    # ========================================================================
+    # Keyboard Event Methods
+    # ========================================================================
+
+    def dispatch_key_event(self, key: str, event_type: str = "keydown",
+                          modifiers: List[str] = None) -> bool:
+        """
+        Dispatch a keyboard event to the currently focused element.
+
+        This uses the WebDriver-BiDi input.performActions command to send
+        keyboard events in a realistic manner.
+
+        Args:
+            key: The key to dispatch (e.g., 'a', 'Enter', 'Backspace', 'Tab')
+            event_type: Type of event ('keydown', 'keyup', or 'keypress')
+            modifiers: List of modifier keys to hold ('Shift', 'Control', 'Alt', 'Meta')
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Build the key action sequence
+            actions = []
+
+            # Handle modifier keys
+            modifier_actions = []
+            if modifiers:
+                for mod in modifiers:
+                    modifier_actions.append({'type': 'keyDown', 'value': self._get_key_code(mod)})
+
+            # Build the key action
+            key_code = self._get_key_code(key)
+
+            key_sequence = []
+            # Add modifier key downs
+            key_sequence.extend(modifier_actions)
+
+            # Add the actual key event
+            if event_type in ('keydown', 'keypress'):
+                key_sequence.append({'type': 'keyDown', 'value': key_code})
+            if event_type in ('keyup', 'keypress'):
+                key_sequence.append({'type': 'keyUp', 'value': key_code})
+
+            # Release modifiers in reverse order
+            if modifiers:
+                for mod in reversed(modifiers):
+                    key_sequence.append({'type': 'keyUp', 'value': self._get_key_code(mod)})
+
+            actions = [{
+                'type': 'key',
+                'id': 'keyboard',
+                'actions': key_sequence
+            }]
+
+            return self.bidi_perform_actions(actions)
+
+        except Exception as e:
+            self.log.warning("Failed to dispatch key event: {}".format(e))
+            return False
+
+    def type_text(self, text: str, delay_ms: int = 0) -> bool:
+        """
+        Type text character by character using keyboard events.
+
+        This method simulates realistic typing by sending individual key events
+        for each character in the text string.
+
+        Args:
+            text: The text to type
+            delay_ms: Delay between keystrokes in milliseconds (0 for no delay)
+
+        Returns:
+            True if all characters were typed successfully, False otherwise
+        """
+        try:
+            # Build actions for all characters
+            key_actions = []
+
+            for char in text:
+                key_code = self._get_key_code(char)
+                key_actions.append({'type': 'keyDown', 'value': key_code})
+                key_actions.append({'type': 'keyUp', 'value': key_code})
+                if delay_ms > 0:
+                    key_actions.append({'type': 'pause', 'duration': delay_ms})
+
+            actions = [{
+                'type': 'key',
+                'id': 'keyboard',
+                'actions': key_actions
+            }]
+
+            return self.bidi_perform_actions(actions)
+
+        except Exception as e:
+            self.log.warning("Failed to type text: {}".format(e))
+            return False
+
+    def type_text_in_input(self, xpath: str, text: str, clear_first: bool = True,
+                          delay_ms: int = 0) -> bool:
+        """
+        Type text into an input field identified by XPath.
+
+        This is a convenience method that combines selecting an input field
+        and typing text into it, simulating realistic user interaction.
+
+        Args:
+            xpath: XPath expression identifying the input element
+            text: Text to type into the input
+            clear_first: If True, clear the input field before typing
+            delay_ms: Delay between keystrokes in milliseconds
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # First, focus the input element
+            if not self.select_input_by_xpath(xpath):
+                self.log.warning("Could not find/focus input element: {}".format(xpath))
+                return False
+
+            # Give the focus a moment to take effect
+            time.sleep(0.05)
+
+            # Clear the field if requested
+            if clear_first:
+                # Select all and delete
+                self.dispatch_key_event('a', modifiers=['Control'])
+                time.sleep(0.02)
+                self.dispatch_key_event('Backspace')
+                time.sleep(0.02)
+
+            # Type the text
+            return self.type_text(text, delay_ms)
+
+        except Exception as e:
+            self.log.warning("Failed to type text in input: {}".format(e))
+            return False
+
+    def send_key_combination(self, keys: List[str]) -> bool:
+        """
+        Send a key combination (e.g., Ctrl+C, Alt+Tab).
+
+        Args:
+            keys: List of keys to press simultaneously. The last key is the
+                  main key, all others are treated as modifiers.
+                  Example: ['Control', 'Shift', 'a'] for Ctrl+Shift+A
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not keys:
+            return False
+
+        if len(keys) == 1:
+            return self.dispatch_key_event(keys[0])
+
+        # All keys except the last are modifiers
+        modifiers = keys[:-1]
+        main_key = keys[-1]
+
+        return self.dispatch_key_event(main_key, modifiers=modifiers)
+
+    def press_enter(self) -> bool:
+        """
+        Press the Enter key.
+
+        Returns:
+            True if successful, False otherwise
+        """
+        return self.dispatch_key_event('Enter')
+
+    def press_tab(self) -> bool:
+        """
+        Press the Tab key.
+
+        Returns:
+            True if successful, False otherwise
+        """
+        return self.dispatch_key_event('Tab')
+
+    def press_escape(self) -> bool:
+        """
+        Press the Escape key.
+
+        Returns:
+            True if successful, False otherwise
+        """
+        return self.dispatch_key_event('Escape')
+
+    def _get_key_code(self, key: str) -> str:
+        """
+        Convert a key name to its WebDriver-BiDi key code.
+
+        Args:
+            key: Human-readable key name
+
+        Returns:
+            WebDriver-BiDi key code string
+        """
+        # Special keys mapping (WebDriver spec key values)
+        # See: https://w3c.github.io/webdriver/#keyboard-actions
+        special_keys = {
+            # Modifier keys
+            'Shift': '\uE008',
+            'Control': '\uE009',
+            'Ctrl': '\uE009',
+            'Alt': '\uE00A',
+            'Meta': '\uE03D',
+            'Command': '\uE03D',
+            'Win': '\uE03D',
+
+            # Navigation keys
+            'Enter': '\uE007',
+            'Return': '\uE007',
+            'Tab': '\uE004',
+            'Escape': '\uE00C',
+            'Esc': '\uE00C',
+            'Backspace': '\uE003',
+            'Delete': '\uE017',
+            'Insert': '\uE016',
+
+            # Arrow keys
+            'ArrowUp': '\uE013',
+            'Up': '\uE013',
+            'ArrowDown': '\uE015',
+            'Down': '\uE015',
+            'ArrowLeft': '\uE012',
+            'Left': '\uE012',
+            'ArrowRight': '\uE014',
+            'Right': '\uE014',
+
+            # Other navigation
+            'Home': '\uE011',
+            'End': '\uE010',
+            'PageUp': '\uE00E',
+            'PageDown': '\uE00F',
+
+            # Function keys
+            'F1': '\uE031',
+            'F2': '\uE032',
+            'F3': '\uE033',
+            'F4': '\uE034',
+            'F5': '\uE035',
+            'F6': '\uE036',
+            'F7': '\uE037',
+            'F8': '\uE038',
+            'F9': '\uE039',
+            'F10': '\uE03A',
+            'F11': '\uE03B',
+            'F12': '\uE03C',
+
+            # Whitespace
+            'Space': ' ',
+        }
+
+        if key in special_keys:
+            return special_keys[key]
+
+        # For regular characters, return as-is
+        return key
+
+    # ========================================================================
+    # Mouse Event Methods
+    # ========================================================================
+
+    def get_element_coordinates_by_xpath(self, xpath: str) -> Optional[Dict[str, float]]:
+        """
+        Get the center coordinates of an element using XPath.
+
+        Args:
+            xpath: XPath expression that identifies the element
+
+        Returns:
+            Dictionary with 'x' and 'y' keys for the element's center coordinates,
+            or None if element not found
+        """
+        try:
+            script = """
+                function(xpath) {
+                    try {
+                        let result = document.evaluate(
+                            xpath,
+                            document,
+                            null,
+                            XPathResult.FIRST_ORDERED_NODE_TYPE,
+                            null
+                        );
+                        let element = result.singleNodeValue;
+                        if (element) {
+                            let rect = element.getBoundingClientRect();
+                            return {
+                                x: rect.left + rect.width / 2,
+                                y: rect.top + rect.height / 2,
+                                width: rect.width,
+                                height: rect.height,
+                                top: rect.top,
+                                left: rect.left,
+                                bottom: rect.bottom,
+                                right: rect.right
+                            };
+                        }
+                        return null;
+                    } catch (e) {
+                        return null;
+                    }
+                }
+            """
+
+            return self.execute_javascript_function(script, [xpath])
+
+        except Exception as e:
+            self.log.warning("Failed to get element coordinates: {}".format(e))
+            return None
+
+    def get_element_coordinates(self, selector: str) -> Optional[Dict[str, float]]:
+        """
+        Get the center coordinates of an element using a CSS selector.
+
+        Args:
+            selector: CSS selector that identifies the element
+
+        Returns:
+            Dictionary with 'x' and 'y' keys for the element's center coordinates,
+            or None if element not found
+        """
+        try:
+            script = """
+                function(selector) {
+                    try {
+                        let element = document.querySelector(selector);
+                        if (element) {
+                            let rect = element.getBoundingClientRect();
+                            return {
+                                x: rect.left + rect.width / 2,
+                                y: rect.top + rect.height / 2,
+                                width: rect.width,
+                                height: rect.height,
+                                top: rect.top,
+                                left: rect.left,
+                                bottom: rect.bottom,
+                                right: rect.right
+                            };
+                        }
+                        return null;
+                    } catch (e) {
+                        return null;
+                    }
+                }
+            """
+
+            return self.execute_javascript_function(script, [selector])
+
+        except Exception as e:
+            self.log.warning("Failed to get element coordinates: {}".format(e))
+            return None
+
+    def move_mouse_to(self, x: float, y: float, duration_ms: int = 0) -> bool:
+        """
+        Move the mouse to specific coordinates.
+
+        Args:
+            x: X coordinate to move to
+            y: Y coordinate to move to
+            duration_ms: Duration of the movement in milliseconds (0 for instant)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            actions = [{
+                'type': 'pointer',
+                'id': 'mouse',
+                'parameters': {'pointerType': 'mouse'},
+                'actions': [
+                    {
+                        'type': 'pointerMove',
+                        'x': int(x),
+                        'y': int(y),
+                        'duration': duration_ms,
+                        'origin': 'viewport'
+                    }
+                ]
+            }]
+
+            return self.bidi_perform_actions(actions)
+
+        except Exception as e:
+            self.log.warning("Failed to move mouse: {}".format(e))
+            return False
+
+    def move_mouse_to_element_by_xpath(self, xpath: str, duration_ms: int = 0) -> bool:
+        """
+        Move the mouse to the center of an element identified by XPath.
+
+        Args:
+            xpath: XPath expression that identifies the element
+            duration_ms: Duration of the movement in milliseconds (0 for instant)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            coords = self.get_element_coordinates_by_xpath(xpath)
+            if not coords:
+                self.log.warning("Could not find element: {}".format(xpath))
+                return False
+
+            return self.move_mouse_to(coords['x'], coords['y'], duration_ms)
+
+        except Exception as e:
+            self.log.warning("Failed to move mouse to element: {}".format(e))
+            return False
+
+    def move_mouse_to_element(self, selector: str, duration_ms: int = 0) -> bool:
+        """
+        Move the mouse to the center of an element identified by CSS selector.
+
+        Args:
+            selector: CSS selector that identifies the element
+            duration_ms: Duration of the movement in milliseconds (0 for instant)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            coords = self.get_element_coordinates(selector)
+            if not coords:
+                self.log.warning("Could not find element: {}".format(selector))
+                return False
+
+            return self.move_mouse_to(coords['x'], coords['y'], duration_ms)
+
+        except Exception as e:
+            self.log.warning("Failed to move mouse to element: {}".format(e))
+            return False
+
+    def mouse_click(self, x: float, y: float, button: str = "left",
+                   click_count: int = 1) -> bool:
+        """
+        Perform a mouse click at specific coordinates.
+
+        Args:
+            x: X coordinate to click at
+            y: Y coordinate to click at
+            button: Mouse button to use ('left', 'middle', 'right')
+            click_count: Number of clicks (1 for single, 2 for double-click)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Map button names to WebDriver button indices
+            button_map = {
+                'left': 0,
+                'middle': 1,
+                'right': 2
+            }
+            button_idx = button_map.get(button, 0)
+
+            # Build click action sequence
+            click_actions = [
+                {
+                    'type': 'pointerMove',
+                    'x': int(x),
+                    'y': int(y),
+                    'duration': 0,
+                    'origin': 'viewport'
+                }
+            ]
+
+            # Add click(s)
+            for _ in range(click_count):
+                click_actions.append({
+                    'type': 'pointerDown',
+                    'button': button_idx
+                })
+                click_actions.append({
+                    'type': 'pointerUp',
+                    'button': button_idx
+                })
+
+            actions = [{
+                'type': 'pointer',
+                'id': 'mouse',
+                'parameters': {'pointerType': 'mouse'},
+                'actions': click_actions
+            }]
+
+            return self.bidi_perform_actions(actions)
+
+        except Exception as e:
+            self.log.warning("Failed to perform mouse click: {}".format(e))
+            return False
+
+    def mouse_click_element_by_xpath(self, xpath: str, button: str = "left",
+                                     click_count: int = 1) -> bool:
+        """
+        Click on an element identified by XPath using mouse events.
+
+        This performs a realistic mouse click by moving to the element's
+        center coordinates and clicking, rather than using JavaScript click().
+
+        Args:
+            xpath: XPath expression that identifies the element
+            button: Mouse button to use ('left', 'middle', 'right')
+            click_count: Number of clicks (1 for single, 2 for double-click)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            coords = self.get_element_coordinates_by_xpath(xpath)
+            if not coords:
+                self.log.warning("Could not find element: {}".format(xpath))
+                return False
+
+            return self.mouse_click(coords['x'], coords['y'], button, click_count)
+
+        except Exception as e:
+            self.log.warning("Failed to click element by xpath: {}".format(e))
+            return False
+
+    def mouse_click_element(self, selector: str, button: str = "left",
+                           click_count: int = 1) -> bool:
+        """
+        Click on an element identified by CSS selector using mouse events.
+
+        This performs a realistic mouse click by moving to the element's
+        center coordinates and clicking, rather than using JavaScript click().
+
+        Args:
+            selector: CSS selector that identifies the element
+            button: Mouse button to use ('left', 'middle', 'right')
+            click_count: Number of clicks (1 for single, 2 for double-click)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            coords = self.get_element_coordinates(selector)
+            if not coords:
+                self.log.warning("Could not find element: {}".format(selector))
+                return False
+
+            return self.mouse_click(coords['x'], coords['y'], button, click_count)
+
+        except Exception as e:
+            self.log.warning("Failed to click element: {}".format(e))
+            return False
+
+    def mouse_double_click(self, x: float, y: float, button: str = "left") -> bool:
+        """
+        Perform a double-click at specific coordinates.
+
+        Args:
+            x: X coordinate to click at
+            y: Y coordinate to click at
+            button: Mouse button to use ('left', 'middle', 'right')
+
+        Returns:
+            True if successful, False otherwise
+        """
+        return self.mouse_click(x, y, button, click_count=2)
+
+    def mouse_double_click_element_by_xpath(self, xpath: str,
+                                            button: str = "left") -> bool:
+        """
+        Double-click on an element identified by XPath.
+
+        Args:
+            xpath: XPath expression that identifies the element
+            button: Mouse button to use ('left', 'middle', 'right')
+
+        Returns:
+            True if successful, False otherwise
+        """
+        return self.mouse_click_element_by_xpath(xpath, button, click_count=2)
+
+    def mouse_right_click_element_by_xpath(self, xpath: str) -> bool:
+        """
+        Right-click (context menu) on an element identified by XPath.
+
+        Args:
+            xpath: XPath expression that identifies the element
+
+        Returns:
+            True if successful, False otherwise
+        """
+        return self.mouse_click_element_by_xpath(xpath, button="right", click_count=1)
+
+    def mouse_drag(self, start_x: float, start_y: float,
+                   end_x: float, end_y: float, duration_ms: int = 100) -> bool:
+        """
+        Perform a mouse drag from one point to another.
+
+        Args:
+            start_x: Starting X coordinate
+            start_y: Starting Y coordinate
+            end_x: Ending X coordinate
+            end_y: Ending Y coordinate
+            duration_ms: Duration of the drag movement in milliseconds
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            actions = [{
+                'type': 'pointer',
+                'id': 'mouse',
+                'parameters': {'pointerType': 'mouse'},
+                'actions': [
+                    {
+                        'type': 'pointerMove',
+                        'x': int(start_x),
+                        'y': int(start_y),
+                        'duration': 0,
+                        'origin': 'viewport'
+                    },
+                    {
+                        'type': 'pointerDown',
+                        'button': 0
+                    },
+                    {
+                        'type': 'pointerMove',
+                        'x': int(end_x),
+                        'y': int(end_y),
+                        'duration': duration_ms,
+                        'origin': 'viewport'
+                    },
+                    {
+                        'type': 'pointerUp',
+                        'button': 0
+                    }
+                ]
+            }]
+
+            return self.bidi_perform_actions(actions)
+
+        except Exception as e:
+            self.log.warning("Failed to perform mouse drag: {}".format(e))
+            return False
+
+    def mouse_drag_element_by_xpath(self, source_xpath: str, target_xpath: str,
+                                    duration_ms: int = 100) -> bool:
+        """
+        Drag an element to another element, both identified by XPath.
+
+        Args:
+            source_xpath: XPath of the element to drag
+            target_xpath: XPath of the element to drag to
+            duration_ms: Duration of the drag movement in milliseconds
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            source_coords = self.get_element_coordinates_by_xpath(source_xpath)
+            target_coords = self.get_element_coordinates_by_xpath(target_xpath)
+
+            if not source_coords:
+                self.log.warning("Could not find source element: {}".format(source_xpath))
+                return False
+            if not target_coords:
+                self.log.warning("Could not find target element: {}".format(target_xpath))
+                return False
+
+            return self.mouse_drag(
+                source_coords['x'], source_coords['y'],
+                target_coords['x'], target_coords['y'],
+                duration_ms
+            )
+
+        except Exception as e:
+            self.log.warning("Failed to drag element: {}".format(e))
+            return False
+
+    def hover_element_by_xpath(self, xpath: str, duration_ms: int = 0) -> bool:
+        """
+        Hover over an element identified by XPath.
+
+        This is an alias for move_mouse_to_element_by_xpath.
+
+        Args:
+            xpath: XPath expression that identifies the element
+            duration_ms: Duration of the movement in milliseconds
+
+        Returns:
+            True if successful, False otherwise
+        """
+        return self.move_mouse_to_element_by_xpath(xpath, duration_ms)

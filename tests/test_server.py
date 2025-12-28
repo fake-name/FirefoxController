@@ -279,9 +279,13 @@ def create_test_html_files():
 <body>
     <h1>Form Test Page</h1>
     <form action="/form-submit" method="post" id="test-form">
-        <input type="text" name="username" value="testuser">
-        <input type="password" name="password" value="testpass">
-        <button type="submit">Submit</button>
+        <label for="username">Username:</label>
+        <input type="text" id="username" name="username" value="">
+        <label for="password">Password:</label>
+        <input type="password" id="password" name="password" value="">
+        <label for="email">Email:</label>
+        <input type="email" id="email" name="email" value="">
+        <button type="submit" id="submit-btn">Submit</button>
     </form>
 </body>
 </html>""",
