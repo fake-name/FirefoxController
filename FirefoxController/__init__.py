@@ -8,7 +8,7 @@ This package provides a Python interface to control Firefox using its remote deb
 
 # Patch Firefox's libxul.so on import to make WebDriver undetectable
 from .webdriver_patch import WebDriverPatchError, check_and_raise_if_needed
-check_and_raise_if_needed()
+# check_and_raise_if_needed()
 
 from .interface import FirefoxRemoteDebugInterface
 from .execution_manager import FirefoxExecutionManager

@@ -15,10 +15,12 @@ import websocket
 import distutils.spawn
 import tempfile
 import os
+import os.path
 import shutil
 import base64
 import queue
 import threading
+import urllib.request
 from typing import Optional, Dict, Any, List, Union
 from urllib.parse import urlparse
 
@@ -117,6 +119,52 @@ class FirefoxExecutionManager:
         self._logging_interfaces = []  # List of interface instances
         self._logging_interfaces_lock = threading.Lock()
         
+    def _install_ublock_origin(self, profile_path: str):
+        """
+        Download and install uBlock Origin extension into the profile.
+
+        Args:
+            profile_path: Path to the Firefox profile directory
+        """
+        # uBlock Origin extension ID and download URL
+        extension_id = "uBlock0@raymondhill.net"
+        # Mozilla Add-ons direct download URL for uBlock Origin
+        ublock_url = "https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi"
+
+        # Create extensions directory
+        extensions_dir = os.path.join(profile_path, "extensions")
+        if not os.path.exists(extensions_dir):
+            os.makedirs(extensions_dir)
+
+        # Extension file path (Firefox expects {extension_id}.xpi)
+        extension_path = os.path.join(extensions_dir, "{}.xpi".format(extension_id))
+
+        # Check if already downloaded
+        if os.path.exists(extension_path):
+            self.log.debug("uBlock Origin already installed at {}".format(extension_path))
+            return
+
+        # Download the extension
+        self.log.info("Downloading uBlock Origin extension...")
+        try:
+            # Create a request with a proper User-Agent to avoid 403 errors
+            request = urllib.request.Request(
+                ublock_url,
+                headers={'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0'}
+            )
+            with urllib.request.urlopen(request, timeout=30) as response:
+                xpi_data = response.read()
+
+            # Write the XPI file
+            with open(extension_path, 'wb') as f:
+                f.write(xpi_data)
+
+            self.log.info("uBlock Origin installed to {}".format(extension_path))
+
+        except Exception as e:
+            self.log.warning("Failed to download uBlock Origin: {}".format(e))
+            # Don't raise - extension is optional, continue without it
+
     def _create_profile(self) -> str:
         """Create a temporary Firefox profile with required preferences"""
         if self.profile_dir:
@@ -126,14 +174,19 @@ class FirefoxExecutionManager:
                 os.makedirs(profile_path)
         else:
             # Create temporary profile
-            self.temp_profile = "~/.firefox_controller_profile"
+            self.temp_profile = os.path.expanduser("~/.firefox_controller_profile")
             profile_path = self.temp_profile
             if not os.path.exists(profile_path):
                 os.makedirs(profile_path)
-            
-        # Create prefs.js with required settings for Firefox remote debugging
-        # These are the critical settings that Firefox requires
-        prefs_content = """user_pref("devtools.debugger.remote-enabled", true);
+
+        # Install uBlock Origin extension
+        self._install_ublock_origin(profile_path)
+
+        # Create prefs.js only if it doesn't exist (allows user customization)
+        prefs_file = os.path.join(profile_path, "prefs.js")
+        if not os.path.exists(prefs_file):
+            # These are the critical settings that Firefox requires for remote debugging
+            prefs_content = """user_pref("devtools.debugger.remote-enabled", true);
 user_pref("devtools.chrome.enabled", true);
 user_pref("devtools.debugger.prompt-connection", false);
 user_pref("devtools.debugger.forbid-certified-apps", false);
@@ -147,12 +200,20 @@ user_pref("devtools.debugger.chrome-enabled", true);
 user_pref("devtools.debugger.remote-mode", true);
 user_pref("devtools.debugger.remote-port", 6000);
 user_pref("devtools.debugger.remote-host", "localhost");
+
+// Auto-enable extensions without user interaction
+user_pref("extensions.autoDisableScopes", 0);
+user_pref("extensions.enabledScopes", 15);
+// Don't show first-run pages for extensions
+user_pref("extensions.getAddons.showPane", false);
+user_pref("extensions.update.enabled", false);
 """
-        
-        prefs_file = os.path.join(profile_path, "prefs.js")
-        with open(prefs_file, "w") as f:
-            f.write(prefs_content)
-            
+            with open(prefs_file, "w") as f:
+                f.write(prefs_content)
+            self.log.info("Created new prefs.js in profile")
+        else:
+            self.log.debug("Using existing prefs.js (user customizations preserved)")
+
         return profile_path
     
     def start_firefox(self):
