@@ -838,75 +838,250 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
     # ========================================================================
 
     def xhr_fetch(self, url: str, headers: Dict[str, str] = None,
-                  post_data: str = None, post_type: str = None) -> Dict[str, Any]:
+                  post_data: str = None, post_type: str = None,
+                  use_chunks: bool = False, chunk_size: int = 512 * 1024) -> Dict[str, Any]:
         """
-        Execute an XMLHttpRequest() for content at the specified URL.
+        Fetch content via XMLHttpRequest without triggering Firefox's download manager.
 
-        This method executes a synchronous XMLHttpRequest in the browser context,
-        allowing you to fetch content from URLs. Similar to ChromeController's xhr_fetch.
+        Uses FileReader.readAsDataURL() for efficient blob->base64 conversion with
+        zero byte iteration. Subject to same-origin policy restrictions.
 
-        Note: This will be affected by the same-origin policy of the current page,
-        so it can fail if you are requesting content from another domain and
-        the current site has restrictive same-origin policies (which is very common).
+        Single requests limited to ~700KB due to WebSocket 1MB frame limit.
+        For larger files, use use_chunks=True.
 
         Args:
             url: URL to fetch
-            headers: Optional dictionary of header name:value pairs
-            post_data: Optional POST data (must be pre-encoded)
-            post_type: Optional Content-Type for POST requests
+            headers: Optional request headers
+            post_data: Optional POST data
+            post_type: Optional Content-Type for POST
+            use_chunks: Enable chunked transfer for large files (default False)
+            chunk_size: Chunk size in bytes when use_chunks=True (default 512KB, max ~700KB)
 
         Returns:
-            Dictionary containing:
-                - url: The requested URL
-                - headers: Request headers
-                - resp_headers: Response headers as string
-                - post: POST data if any
-                - response: Response text
-                - mimetype: Response Content-Type
-                - code: HTTP status code
+            Dict with keys: url, headers, resp_headers, post, response (text),
+            content (bytes), mimetype, code
         """
+        # Only use chunking if explicitly requested and not a POST
+        if use_chunks and not post_data:
+            try:
+                head_result = self._xhr_head(url, headers)
+                content_length = head_result.get('content_length', 0)
+
+                # Use chunked transfer for files larger than chunk_size
+                if content_length > chunk_size:
+                    self.log.info("Large file detected ({} bytes), using chunked transfer".format(content_length))
+                    return self._xhr_fetch_chunked(url, headers, content_length, chunk_size)
+                elif content_length > 0:
+                    self.log.debug("File size {} is below chunk threshold, using single request".format(content_length))
+            except Exception as e:
+                self.log.debug("HEAD request failed, falling back to normal fetch: {}".format(e))
+
+        # Default: single request
+        return self._xhr_fetch_single(url, headers, post_data, post_type)
+
+    def _xhr_head(self, url: str, headers: Dict[str, str] = None) -> Dict[str, Any]:
+        """Send HEAD request to get content length"""
         try:
             js_script = """
-                function(url, headers, post_data, post_type) {
-                    var req = new XMLHttpRequest();
-                    if (post_data) {
-                        req.open("POST", url, false);
-                        if (post_type) {
-                            req.setRequestHeader("Content-Type", post_type);
-                        }
-                    } else {
-                        req.open("GET", url, false);
-                    }
+                function(url, headers) {
+                    try {
+                        var req = new XMLHttpRequest();
+                        req.open("HEAD", url, false);
 
-                    if (headers) {
-                        let entries = Object.entries(headers);
-                        for (let idx = 0; idx < entries.length; idx += 1) {
-                            req.setRequestHeader(entries[idx][0], entries[idx][1]);
+                        if (headers) {
+                            let entries = Object.entries(headers);
+                            for (let idx = 0; idx < entries.length; idx += 1) {
+                                req.setRequestHeader(entries[idx][0], entries[idx][1]);
+                            }
                         }
-                    }
 
-                    if (post_data) {
-                        req.send(post_data);
-                    } else {
                         req.send();
-                    }
 
-                    return {
-                        url: url,
-                        headers: headers,
-                        resp_headers: req.getAllResponseHeaders(),
-                        post: post_data,
-                        response: req.responseText,
-                        mimetype: req.getResponseHeader("Content-Type"),
-                        code: req.status
-                    };
+                        var contentLength = parseInt(req.getResponseHeader("Content-Length")) || 0;
+
+                        return {
+                            content_length: contentLength,
+                            mimetype: req.getResponseHeader("Content-Type"),
+                            code: req.status
+                        };
+                    } catch (e) {
+                        return { content_length: 0, code: 0, error: e.toString() };
+                    }
                 }
             """
 
-            result = self.execute_javascript_function(
-                js_script,
-                [url, headers or {}, post_data, post_type]
-            )
+            result = self.execute_javascript_function(js_script, [url, headers or {}])
+            self.log.info("HEAD request result: {}".format(result))
+            return result if result else {'content_length': 0, 'code': 0}
+        except Exception as e:
+            self.log.warning("HEAD request failed: {}".format(e))
+            return {'content_length': 0, 'code': 0}
+
+    def _xhr_fetch_chunked(self, url: str, headers: Dict[str, str],
+                          content_length: int, chunk_size: int) -> Dict[str, Any]:
+        """Fetch large file in chunks using Range requests"""
+        try:
+            chunks = []
+            offset = 0
+            resp_headers = None
+            mimetype = None
+            status_code = 0
+
+            while offset < content_length:
+                end = min(offset + chunk_size - 1, content_length - 1)
+
+                # Add Range header
+                chunk_headers = headers.copy() if headers else {}
+                chunk_headers['Range'] = 'bytes={}-{}'.format(offset, end)
+
+                self.log.info("Fetching chunk: bytes {}-{} of {}, headers={}".format(
+                    offset, end, content_length, chunk_headers))
+
+                # Fetch this chunk
+                chunk_result = self._xhr_fetch_single(url, chunk_headers, None, None)
+                self.log.info("Chunk result code: {}, content length: {}, error: {}".format(
+                    chunk_result.get('code'), len(chunk_result.get('content', b'')),
+                    chunk_result.get('error', 'none')))
+
+                if chunk_result.get('code') not in (200, 206):  # 206 = Partial Content
+                    raise Exception("Chunk fetch failed with code {}".format(chunk_result.get('code')))
+
+                # Store metadata from first chunk
+                if offset == 0:
+                    resp_headers = chunk_result.get('resp_headers', '')
+                    mimetype = chunk_result.get('mimetype')
+                    status_code = chunk_result.get('code')
+
+                # Append chunk data
+                chunk_content = chunk_result.get('content', b'')
+                chunks.append(chunk_content)
+
+                offset += len(chunk_content)
+
+                # Safety check
+                if len(chunk_content) == 0:
+                    break
+
+            # Combine all chunks
+            full_content = b''.join(chunks)
+
+            # Try to decode as text
+            try:
+                response_text = full_content.decode('utf-8')
+            except UnicodeDecodeError:
+                response_text = ''
+
+            return {
+                'url': url,
+                'headers': headers,
+                'resp_headers': resp_headers,
+                'post': None,
+                'response': response_text,
+                'content': full_content,
+                'mimetype': mimetype,
+                'code': status_code,
+                'chunked': True,
+                'chunks': len(chunks)
+            }
+
+        except Exception as e:
+            self.log.error("Chunked fetch failed: {}".format(e))
+            return {
+                'url': url,
+                'headers': headers,
+                'resp_headers': '',
+                'post': None,
+                'response': '',
+                'content': b'',
+                'mimetype': None,
+                'code': 0,
+                'error': str(e)
+            }
+
+    def _xhr_fetch_single(self, url: str, headers: Dict[str, str] = None,
+                         post_data: str = None, post_type: str = None) -> Dict[str, Any]:
+        """Fetch content in a single request (internal method)"""
+        try:
+            # Use FileReader.readAsDataURL for efficient blob->base64 conversion
+            js_script = """
+                function(url, headers, post_data, post_type) {
+                    return new Promise((resolve, reject) => {
+                        var req = new XMLHttpRequest();
+                        if (post_data) {
+                            req.open("POST", url, true);
+                            if (post_type) {
+                                req.setRequestHeader("Content-Type", post_type);
+                            }
+                        } else {
+                            req.open("GET", url, true);
+                        }
+
+                        req.responseType = 'blob';
+
+                        if (headers) {
+                            let entries = Object.entries(headers);
+                            for (let idx = 0; idx < entries.length; idx += 1) {
+                                console.log('Setting header:', entries[idx][0], '=', entries[idx][1]);
+                                req.setRequestHeader(entries[idx][0], entries[idx][1]);
+                            }
+                        }
+
+                        req.onload = function() {
+                            // Use FileReader to convert blob to base64 - no byte iteration!
+                            var reader = new FileReader();
+                            reader.onloadend = function() {
+                                // DataURL format: data:[<mediatype>][;base64],<data>
+                                var dataUrl = reader.result;
+                                var base64_response = dataUrl.split(',')[1];  // Extract base64 part
+
+                                resolve({
+                                    url: url,
+                                    headers: headers,
+                                    resp_headers: req.getAllResponseHeaders(),
+                                    post: post_data,
+                                    binary_response: base64_response,
+                                    mimetype: req.getResponseHeader("Content-Type"),
+                                    code: req.status
+                                });
+                            };
+                            reader.onerror = function() {
+                                resolve({
+                                    url: url,
+                                    headers: headers,
+                                    resp_headers: '',
+                                    post: post_data,
+                                    binary_response: '',
+                                    mimetype: null,
+                                    code: 0,
+                                    error: 'FileReader error'
+                                });
+                            };
+                            reader.readAsDataURL(req.response);
+                        };
+
+                        req.onerror = function() {
+                            resolve({
+                                url: url,
+                                headers: headers,
+                                resp_headers: '',
+                                post: post_data,
+                                binary_response: '',
+                                mimetype: null,
+                                code: 0,
+                                error: 'Network error'
+                            });
+                        };
+
+                        if (post_data) {
+                            req.send(post_data);
+                        } else {
+                            req.send();
+                        }
+                    });
+                }
+            """
+
+            result = self.__exec_js(js_script, should_call=True, args=[url, headers or {}, post_data, post_type], await_promise=True)
 
             if result is None:
                 return {
@@ -915,9 +1090,30 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
                     'resp_headers': '',
                     'post': post_data,
                     'response': '',
+                    'content': b'',
                     'mimetype': None,
                     'code': 0
                 }
+
+            # Decode base64 response to bytes
+            if 'binary_response' in result:
+                try:
+                    content = base64.b64decode(result['binary_response'])
+                    result['content'] = content
+
+                    # For backward compatibility, also try to decode as text
+                    try:
+                        result['response'] = content.decode('utf-8')
+                    except UnicodeDecodeError:
+                        # Binary content, not valid UTF-8
+                        result['response'] = ''
+                except Exception as e:
+                    self.log.warning("Failed to decode binary response: {}".format(e))
+                    result['content'] = b''
+                    result['response'] = ''
+            else:
+                result['content'] = b''
+                result['response'] = ''
 
             return result
 
@@ -929,6 +1125,7 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
                 'resp_headers': '',
                 'post': post_data,
                 'response': '',
+                'content': b'',
                 'mimetype': None,
                 'code': 0,
                 'error': str(e)

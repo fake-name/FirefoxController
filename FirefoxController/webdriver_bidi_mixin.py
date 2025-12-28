@@ -411,6 +411,22 @@ class WebDriverBiDiMixin:
                             else:
                                 array_elements.append({'type': 'undefined'})
                         bidi_arguments.append({'type': 'array', 'value': array_elements})
+                    elif isinstance(arg, dict):
+                        # Convert dict to object
+                        object_properties = []
+                        for key, value in arg.items():
+                            if isinstance(value, bool):
+                                object_properties.append([key, {'type': 'boolean', 'value': value}])
+                            elif isinstance(value, (int, float)):
+                                object_properties.append([key, {'type': 'number', 'value': value}])
+                            elif isinstance(value, str):
+                                object_properties.append([key, {'type': 'string', 'value': value}])
+                            elif value is None:
+                                object_properties.append([key, {'type': 'undefined'}])
+                            else:
+                                # Nested objects/arrays not supported, convert to string
+                                object_properties.append([key, {'type': 'string', 'value': str(value)}])
+                        bidi_arguments.append({'type': 'object', 'value': object_properties})
                     else:
                         # For complex objects, try to convert to string
                         bidi_arguments.append({'type': 'string', 'value': str(arg)})

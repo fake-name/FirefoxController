@@ -22,9 +22,16 @@ class TestHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         html_pages_dir = os.path.join(tests_dir, "html_pages")
         super().__init__(*args, directory=html_pages_dir, **kwargs)
     
+    def do_HEAD(self):
+        """Handle HEAD requests - call do_GET but don't send body"""
+        # Save the command and call do_GET
+        self.command = 'HEAD'
+        self.do_GET()
+
     def do_GET(self):
-        """Handle GET requests"""
+        """Handle GET and HEAD requests"""
         parsed_url = urlparse(self.path)
+        is_head = (self.command == 'HEAD')
         
         # Handle different test pages
         if parsed_url.path == "/":
@@ -103,7 +110,109 @@ class TestHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"Plain text async response")
             return
-        
+        elif parsed_url.path == "/download/image.png":
+            # Serve a small test PNG image (1x1 red pixel)
+            self.send_response(200)
+            self.send_header("Content-type", "image/png")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            # 1x1 red pixel PNG (base64 decoded)
+            png_data = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\xcf\xc0\x00\x00\x00\x03\x00\x01\x00\x18\xdd\x8d\xb4\x00\x00\x00\x00IEND\xaeB`\x82'
+            self.wfile.write(png_data)
+            return
+        elif parsed_url.path == "/download/document.pdf":
+            # Serve a minimal PDF file
+            self.send_response(200)
+            self.send_header("Content-type", "application/pdf")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            # Minimal PDF content
+            pdf_data = b'%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> /MediaBox [0 0 612 792] /Contents 4 0 R >>\nendobj\n4 0 obj\n<< /Length 44 >>\nstream\nBT\n/F1 12 Tf\n100 700 Td\n(Test PDF) Tj\nET\nendstream\nendobj\nxref\n0 5\n0000000000 65535 f\n0000000009 00000 n\n0000000058 00000 n\n0000000115 00000 n\n0000000317 00000 n\ntrailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n410\n%%EOF\n'
+            self.wfile.write(pdf_data)
+            return
+        elif parsed_url.path == "/download/archive.zip":
+            # Serve a small ZIP file
+            self.send_response(200)
+            self.send_header("Content-type", "application/zip")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            # Minimal ZIP file with one text file
+            import zipfile
+            import io
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                zip_file.writestr("test.txt", "This is a test file in a ZIP archive")
+            self.wfile.write(zip_buffer.getvalue())
+            return
+        elif parsed_url.path == "/download/data.json":
+            # Serve JSON file that might be downloaded
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            response = json.dumps({
+                "type": "downloadable_data",
+                "content": "This JSON might trigger download",
+                "size": 1024
+            })
+            self.wfile.write(response.encode())
+            return
+        elif parsed_url.path == "/download/text.txt":
+            # Serve a plain text file
+            self.send_response(200)
+            self.send_header("Content-type", "text/plain")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(b"This is a plain text file that could be downloaded.")
+            return
+        elif parsed_url.path == "/download/binary.bin":
+            # Serve arbitrary binary data
+            self.send_response(200)
+            self.send_header("Content-type", "application/octet-stream")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            # Some binary data (not valid file format, just bytes)
+            binary_data = bytes(range(256))
+            self.wfile.write(binary_data)
+            return
+        elif parsed_url.path == "/download/large.bin":
+            # Serve a large file (5MB) to test chunking
+            file_size = 5 * 1024 * 1024  # 5MB
+            range_header = self.headers.get('Range')
+            print(f"[DEBUG] Large file request - Range header: {range_header}, All headers: {dict(self.headers)}")
+
+            if range_header:
+                # Parse Range header: bytes=start-end
+                range_match = range_header.replace('bytes=', '').split('-')
+                start = int(range_match[0])
+                end = int(range_match[1]) if range_match[1] else file_size - 1
+
+                self.send_response(206)  # Partial Content
+                self.send_header("Content-type", "application/octet-stream")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Content-Range", "bytes {}-{}/{}".format(start, end, file_size))
+                self.send_header("Content-Length", str(end - start + 1))
+                self.end_headers()
+
+                # Send the requested chunk (repeating pattern for testing)
+                if not is_head:
+                    chunk_size = end - start + 1
+                    for i in range(chunk_size):
+                        self.wfile.write(bytes([(start + i) % 256]))
+            else:
+                self.send_response(200)
+                self.send_header("Content-type", "application/octet-stream")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Content-Length", str(file_size))
+                self.end_headers()
+
+                # Send full file (repeating pattern) - skip for HEAD
+                if not is_head:
+                    for i in range(file_size):
+                        self.wfile.write(bytes([i % 256]))
+            return
+
         # Handle static files
         return super().do_GET()
     
