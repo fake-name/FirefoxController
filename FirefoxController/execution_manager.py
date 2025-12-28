@@ -83,6 +83,9 @@ class FirefoxExecutionManager:
         self.ws_connection = None
         self.root_actor = None
         self.log = logging.getLogger("FirefoxController.ExecutionManager")
+
+        if self.profile_dir is None:
+            self.profile_dir = os.path.expanduser("~/.firefox_controller_profile")
         
         # Message ID counter
         self.msg_id = 0
@@ -167,18 +170,11 @@ class FirefoxExecutionManager:
 
     def _create_profile(self) -> str:
         """Create a temporary Firefox profile with required preferences"""
-        if self.profile_dir:
-            # Use provided profile directory
-            profile_path = self.profile_dir
-            if not os.path.exists(profile_path):
-                os.makedirs(profile_path)
-        else:
-            # Create temporary profile
-            self.temp_profile = os.path.expanduser("~/.firefox_controller_profile")
-            profile_path = self.temp_profile
-            if not os.path.exists(profile_path):
-                os.makedirs(profile_path)
-
+        # Use provided profile directory
+        profile_path = self.profile_dir
+        if not os.path.exists(profile_path):
+            os.makedirs(profile_path)
+   
         # Install uBlock Origin extension
         self._install_ublock_origin(profile_path)
 
