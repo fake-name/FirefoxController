@@ -36,6 +36,7 @@ setup(
     entry_points={
         "console_scripts": [
             "firefoxcontroller=FirefoxController.firefox_controller:main",
+            "firefox-patch-webdriver=FirefoxController.webdriver_patch:main",
         ],
     },
 )

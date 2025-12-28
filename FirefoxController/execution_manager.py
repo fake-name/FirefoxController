@@ -126,8 +126,10 @@ class FirefoxExecutionManager:
                 os.makedirs(profile_path)
         else:
             # Create temporary profile
-            self.temp_profile = tempfile.mkdtemp(prefix="firefox_controller_")
+            self.temp_profile = "~/.firefox_controller_profile"
             profile_path = self.temp_profile
+            if not os.path.exists(profile_path):
+                os.makedirs(profile_path)
             
         # Create prefs.js with required settings for Firefox remote debugging
         # These are the critical settings that Firefox requires
