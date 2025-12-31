@@ -14,7 +14,7 @@ import base64
 from typing import Optional, Dict, Any, List, Union
 
 from .execution_manager import FirefoxExecutionManager
-from .exceptions import FirefoxError
+from .exceptions import FirefoxError, FirefoxNavigateTimedOut
 from .webdriver_bidi_mixin import WebDriverBiDiMixin
 
 
@@ -29,8 +29,8 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
     
     def __init__(self,
                  binary: str = "firefox",
-                 host: str = "localhost", 
-                 port: int = 6000,
+                 host: str = "localhost",
+                 port: Optional[int] = 9222,
                  headless: bool = False,
                  additional_options: List[str] = None,
                  profile_dir: str = None,
@@ -41,7 +41,7 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
         Args:
             binary: Path to Firefox binary
             host: Host to connect to
-            port: Debug port to use
+            port: Debug port to use (9222 default, None for automatic selection)
             headless: Run Firefox in headless mode
             additional_options: Additional command line options
             profile_dir: Custom profile directory (None for temporary profile)
@@ -71,6 +71,9 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
         self._request_logging_enabled = False
         self._request_log_cache = {}  # url -> {'url': url, 'mimetype': str, 'content': bytes}
         self._data_collector_id = None
+
+        # Default timeout for operations (can be changed with set_default_timeout())
+        self.default_timeout = 30
     
     def __enter__(self):
         """Context manager entry"""
@@ -87,24 +90,60 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
                 self.log.debug("Error disabling request logging on exit: {}".format(e))
 
         return self.manager.__exit__(exc_type, exc_val, exc_tb)
-    
-    def blocking_navigate_and_get_source(self, url: str, timeout: int = 30) -> str:
+
+    @property
+    def port(self) -> int:
+        """Get the actual port being used by Firefox"""
+        return self.manager.port
+
+    def set_default_timeout(self, timeout: int) -> None:
+        """
+        Set the default timeout for all operations.
+
+        Args:
+            timeout: Default timeout in seconds
+
+        Example:
+            firefox.set_default_timeout(60)  # Set all operations to 60 second timeout
+        """
+        self.default_timeout = timeout
+        self.log.debug("Default timeout set to {} seconds".format(timeout))
+
+    def blocking_navigate_and_get_source(self, url: str, timeout: int = None) -> str:
         """
         Navigate to a URL and get the page source (blocking).
 
-        This is similar to ChromeController's blocking_navigate_and_get_source.
+        Args:
+            url: URL to navigate to
+            timeout: Timeout in seconds (uses default_timeout if None)
+
+        Returns:
+            Page source HTML as string
         """
+        # Use default timeout if not specified
+        timeout = timeout if timeout is not None else self.default_timeout
+
         # Navigate to URL using THIS tab's context
         self.blocking_navigate(url, timeout)
 
         # Get page source
-        return self.get_page_source()
+        return self.get_page_source(timeout=timeout)
     
-    def get_page_source(self) -> str:
-        """Get the page source for the current browsing context"""
+    def get_page_source(self, timeout: int = None) -> str:
+        """Get the page source for the current browsing context
+
+        Args:
+            timeout: Timeout in seconds (uses default_timeout if None)
+
+        Returns:
+            Page source HTML as string
+        """
+        # Use default timeout if not specified
+        timeout = timeout if timeout is not None else self.default_timeout
+
         try:
             # Use the BiDi method from the mixin
-            return self.bidi_get_page_source()
+            return self.bidi_get_page_source(timeout=timeout)
         except Exception as e:
             self.log.warning("Failed to get page source: {}".format(e))
             return ""
@@ -140,54 +179,60 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
             self.log.warning("Failed to take screenshot: {}".format(e))
             return b""
     
-    def __exec_js(self, script: str, should_call: bool = False, args: list = None, await_promise: bool = False) -> Any:
+    def __exec_js(self, script: str, should_call: bool = False, args: list = None, await_promise: bool = False, timeout: int = None) -> Any:
         """
         Internal method to execute JavaScript in the browser context.
-        
+
         Args:
             script: JavaScript code to execute
             should_call: Whether to call the script as a function
             args: Arguments to pass if should_call is True
             await_promise: Whether to await a promise result
-        
+            timeout: Timeout in seconds (uses default_timeout if None)
+
         Returns:
             Result of JavaScript execution
         """
+        # Use default timeout if not specified
+        timeout = timeout if timeout is not None else self.default_timeout
+
         try:
             if should_call:
                 # Use the BiDi call function method
-                return self.bidi_call_function(script, arguments=args, await_promise=await_promise)
+                return self.bidi_call_function(script, arguments=args, await_promise=await_promise, timeout=timeout)
             else:
                 # Use the BiDi evaluate script method
-                return self.bidi_evaluate_script(script, await_promise=await_promise)
+                return self.bidi_evaluate_script(script, await_promise=await_promise, timeout=timeout)
         except Exception as e:
             self.log.warning("Failed to execute JavaScript: {}".format(e))
             return None
     
-    def execute_javascript_statement(self, script: str) -> Any:
+    def execute_javascript_statement(self, script: str, timeout: int = None) -> Any:
         """
         Execute a JavaScript statement in the browser context.
-        
+
         Args:
             script: JavaScript code to execute
-            
+            timeout: Timeout in seconds (uses default_timeout if None)
+
         Returns:
             Result of JavaScript execution
         """
-        return self.__exec_js(script, should_call=False)
-    
-    def execute_javascript_function(self, script: str, args: list = None) -> Any:
+        return self.__exec_js(script, should_call=False, timeout=timeout)
+
+    def execute_javascript_function(self, script: str, args: list = None, timeout: int = None) -> Any:
         """
         Execute a JavaScript function in the browser context.
-        
+
         Args:
             script: JavaScript function definition
             args: Arguments to pass to the function
-            
+            timeout: Timeout in seconds (uses default_timeout if None)
+
         Returns:
             Result of function execution
         """
-        return self.__exec_js(script, should_call=True, args=args, await_promise=False)
+        return self.__exec_js(script, should_call=True, args=args, await_promise=False, timeout=timeout)
     
     def navigate_to(self, url: str) -> bool:
         """
@@ -214,21 +259,31 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
             self.log.warning("Failed to navigate via JavaScript: {}".format(e))
             return False
     
-    def blocking_navigate(self, url: str, timeout: int = 30) -> bool:
+    def blocking_navigate(self, url: str, timeout: int = None) -> bool:
         """
         Perform a blocking navigation to a URL.
 
         Args:
             url: URL to navigate to
-            timeout: Maximum time to wait for navigation to complete
+            timeout: Timeout in seconds (uses default_timeout if None)
 
         Returns:
             True if navigation succeeded, False otherwise
+
+        Raises:
+            FirefoxNavigateTimedOut: If navigation times out
         """
+        # Use default timeout if not specified
+        timeout = timeout if timeout is not None else self.default_timeout
+
         try:
-            # Use the BiDi method from the mixin
-            self.bidi_navigate(url, wait="complete")
+            # Use the BiDi method from the mixin, passing timeout
+            self.bidi_navigate(url, wait="complete", timeout=timeout)
             return True
+        except FirefoxNavigateTimedOut:
+            # Re-raise navigation timeout for user to handle
+            self.log.error("Navigation to {} timed out after {} seconds".format(url, timeout))
+            raise
         except Exception as e:
             self.log.warning("Blocking navigation failed: {}".format(e))
             return False

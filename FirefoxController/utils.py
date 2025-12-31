@@ -8,6 +8,7 @@ This module contains utility functions for FirefoxController.
 
 import logging
 import argparse
+import socket
 
 
 def setup_logging(verbose: bool = False):
@@ -28,7 +29,7 @@ def main():
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
     parser.add_argument("--silent", "-s", action="store_true", help="Silent mode")
     parser.add_argument("--binary", default="firefox", help="Firefox binary path")
-    parser.add_argument("--port", type=int, default=6000, help="Debug port")
+    parser.add_argument("--port", type=int, default=9222, help="Debug port")
     parser.add_argument("--headless", action="store_true", help="Run in headless mode")
     
     subparsers = parser.add_subparsers(dest="command")
@@ -68,6 +69,52 @@ def main():
     
     else:
         parser.print_help()
+
+
+def find_available_port(start_port=9222, max_attempts=100):
+    """
+    Find an available port for Firefox remote debugging.
+
+    Uses socket binding to test port availability. First tries to bind to
+    port 0 to get an OS-assigned port, then falls back to sequential scanning
+    if needed.
+
+    Args:
+        start_port: Port to start searching from (default 9222)
+        max_attempts: Maximum number of ports to try (default 100)
+
+    Returns:
+        int: Available port number
+
+    Raises:
+        OSError: If no available port found after max_attempts
+    """
+    # Try to bind to port 0 to get an OS-assigned port (most reliable)
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("localhost", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+
+        # Verify it's in a reasonable range (avoid very low ports)
+        if port >= 1024:
+            return port
+    except OSError:
+        pass
+
+    # Fallback: scan sequential ports starting from start_port
+    for offset in range(max_attempts):
+        try_port = start_port + offset
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.bind(("localhost", try_port))
+            sock.close()
+            return try_port
+        except OSError:
+            continue
+
+    raise OSError("Could not find available port after {} attempts starting from {}".format(
+        max_attempts, start_port))
 
 
 if __name__ == "__main__":

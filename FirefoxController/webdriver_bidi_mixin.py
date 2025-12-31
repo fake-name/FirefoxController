@@ -21,6 +21,9 @@ from .bidi_types import (
     BiDiTypeError, BiDiValidationError, BiDiTypeValidator
 )
 
+# Import exceptions
+from .exceptions import FirefoxResponseNotReceived, FirefoxNavigateTimedOut
+
 
 class WebDriverBiDiMixin:
     """
@@ -71,31 +74,33 @@ class WebDriverBiDiMixin:
             self.log.warning("Failed to create browsing context: {}".format(e))
             raise
     
-    def bidi_navigate(self, url: str, context_id: str = None, wait: str = "complete") -> Dict[str, Any]:
+    def bidi_navigate(self, url: str, context_id: str = None, wait: str = "complete", timeout: int = 30) -> Dict[str, Any]:
         """
         Navigate to a URL using WebDriver-BiDi.
-        
+
         Args:
             url: URL to navigate to
             context_id: Browsing context ID (uses current if None)
             wait: When to consider navigation complete ('complete', 'interactive', 'domcontentloaded')
-            
+            timeout: Timeout in seconds for the navigation operation (default: 30)
+
         Returns:
             Navigation result dictionary
-            
+
         Raises:
             BiDiTypeError: If URL or wait parameter is invalid
+            FirefoxNavigateTimedOut: If navigation times out
             Exception: If navigation fails
         """
         try:
             # Validate parameters
             validate_url(url)
             validate_navigation_type(wait)
-            
+
             context = context_id or self.active_browsing_context or self.manager.browsing_context
             if not context:
                 raise Exception("No browsing context available")
-                
+
             response = self.manager._send_message({
                 'method': 'browsingContext.navigate',
                 'params': {
@@ -103,20 +108,23 @@ class WebDriverBiDiMixin:
                     'url': url,
                     'wait': wait
                 }
-            })
-            
+            }, timeout=timeout)
+
             # Validate response
             if response.get('type') != 'success':
                 error_msg = response.get('error', 'Unknown error')
                 raise Exception("Navigation failed: {}".format(error_msg))
             if 'result' not in response:
                 raise Exception("Navigation response missing result")
-            
+
             if response.get('type') == 'success' and 'result' in response:
                 return response['result']
             else:
                 return {"status": "success", "url": url}
-                
+
+        except FirefoxResponseNotReceived as e:
+            # Convert WebSocket timeout to navigation timeout
+            raise FirefoxNavigateTimedOut("Navigation to {} timed out after {} seconds".format(url, timeout))
         except Exception as e:
             self.log.warning("Failed to navigate: {}".format(e))
             raise
@@ -285,18 +293,19 @@ class WebDriverBiDiMixin:
     # Script Commands
     # ========================================================================
     
-    def bidi_evaluate_script(self, script: str, context_id: str = None, 
-                           await_promise: bool = False, 
-                           sandbox: str = None) -> Any:
+    def bidi_evaluate_script(self, script: str, context_id: str = None,
+                           await_promise: bool = False,
+                           sandbox: str = None, timeout: int = 30) -> Any:
         """
         Evaluate a script using WebDriver-BiDi.
-        
+
         Args:
             script: JavaScript code to evaluate
             context_id: Browsing context ID (uses current if None)
             await_promise: Whether to await promise resolution
             sandbox: Sandbox name for script execution
-            
+            timeout: Timeout in seconds for the script evaluation (default: 30)
+
         Returns:
             Result of script evaluation
         """
@@ -304,15 +313,15 @@ class WebDriverBiDiMixin:
             context = context_id or self.active_browsing_context or self.manager.browsing_context
             if not context:
                 raise Exception("No browsing context available")
-                
+
             # Handle scripts that contain 'return ' statements
             # WebDriver-BiDi script.evaluate expects an expression, not a return statement
             expression = script.strip()
-            
+
             # If the script starts with 'return ', strip it
             if expression.startswith('return '):
                 expression = expression[7:].strip()
-            
+
             # For multi-line scripts with return statements, we need a different approach
             # Since WebDriver-BiDi script.evaluate can't handle return statements,
             # we'll try to wrap the script in a function and call it immediately
@@ -320,58 +329,59 @@ class WebDriverBiDiMixin:
                 # This is a multi-line script with return statements
                 # Wrap it in an immediately-invoked function expression
                 expression = '(function() {' + expression + '})()'
-                
+
             # Fix common JavaScript syntax errors in object literals
             # WebDriver-BiDi script.evaluate treats {key: value} as a block, not object literal
             # We need to wrap object literals in parentheses: ({key: value})
-            
+
             # Check if this looks like an object literal that should be wrapped
             if (expression.startswith('{') and expression.endswith('}') and
                 ('title:' in expression or 'url:' in expression or 'elementCount:' in expression)):
                 # Wrap in parentheses to force object literal interpretation
                 expression = '(' + expression + ')'
-                
+
             # Also fix the colon syntax issue
             expression = expression.replace('title:', 'title:')
             expression = expression.replace('url:', 'url:')
             expression = expression.replace('elementCount:', 'elementCount:')
-                
+
             params = {
                 'expression': expression,
                 'target': {'context': context},
                 'awaitPromise': await_promise
             }
-            
+
             if sandbox:
                 params['sandbox'] = sandbox
-                
+
             response = self.manager._send_message({
                 'method': 'script.evaluate',
                 'params': params
-            })
-            
+            }, timeout=timeout)
+
             return self._parse_script_result(response)
-                
+
         except Exception as e:
             self.log.warning("Failed to evaluate script: {}".format(e))
             return None
     
     def bidi_call_function(self, function_declaration: str, arguments: List[Any] = None,
                           context_id: str = None, await_promise: bool = False,
-                          sandbox: str = None) -> Any:
+                          sandbox: str = None, timeout: int = 30) -> Any:
         """
         Call a function using WebDriver-BiDi.
-        
+
         Args:
             function_declaration: JavaScript function declaration
             arguments: Arguments to pass to the function
             context_id: Browsing context ID (uses current if None)
             await_promise: Whether to await promise resolution
             sandbox: Sandbox name for script execution
-            
+            timeout: Timeout in seconds for the function call (default: 30)
+
         Returns:
             Result of function call
-            
+
         Note:
             This method may not be supported by all WebDriver-BiDi implementations.
         """
@@ -379,13 +389,13 @@ class WebDriverBiDiMixin:
             context = context_id or self.active_browsing_context or self.manager.browsing_context
             if not context:
                 raise Exception("No browsing context available")
-                
+
             params = {
                 'functionDeclaration': function_declaration,
                 'target': {'context': context},
                 'awaitPromise': await_promise  # This parameter is required by the spec
             }
-            
+
             if arguments:
                 # Convert arguments to WebDriver-BiDi format (script.LocalValue)
                 bidi_arguments = []
@@ -430,17 +440,17 @@ class WebDriverBiDiMixin:
                     else:
                         # For complex objects, try to convert to string
                         bidi_arguments.append({'type': 'string', 'value': str(arg)})
-                
+
                 params['arguments'] = bidi_arguments
-                
+
             if sandbox:
                 params['sandbox'] = sandbox
-                
+
             response = self.manager._send_message({
                 'method': 'script.callFunction',
                 'params': params
-            })
-            
+            }, timeout=timeout)
+
             return self._parse_script_result(response)
                 
         except Exception as e:
@@ -1299,13 +1309,14 @@ class WebDriverBiDiMixin:
             self.log.warning("Failed to get page title: {}".format(e))
             return ""
     
-    def bidi_get_page_source(self, context_id: str = None) -> str:
+    def bidi_get_page_source(self, context_id: str = None, timeout: int = 30) -> str:
         """
         Get the page source using WebDriver-BiDi.
-        
+
         Args:
             context_id: Browsing context ID (uses current if None)
-            
+            timeout: Timeout in seconds for getting page source (default: 30)
+
         Returns:
             Page source as string
         """
@@ -1313,9 +1324,9 @@ class WebDriverBiDiMixin:
             context = context_id or self.active_browsing_context or self.manager.browsing_context
             if not context:
                 return ""
-                
+
             # Get page source using script evaluation
-            result = self.bidi_evaluate_script("document.documentElement.outerHTML", context)
+            result = self.bidi_evaluate_script("document.documentElement.outerHTML", context, timeout=timeout)
             return str(result) if result else ""
                 
         except Exception as e:

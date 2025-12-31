@@ -155,11 +155,12 @@ class TestWebDriverBiDiMethodSignatures:
         interface = FirefoxRemoteDebugInterface()
         sig = inspect.signature(interface.bidi_navigate)
         params = list(sig.parameters.keys())
-        
+
         assert 'url' in params
         assert 'context_id' in params
         assert 'wait' in params
-        assert len(params) == 3  # self, url, context_id, wait
+        assert 'timeout' in params
+        assert len(params) == 4  # self, url, context_id, wait, timeout
     
     def test_bidi_evaluate_script_signature(self):
         """Test bidi_evaluate_script method signature"""

@@ -39,8 +39,9 @@ __all__ = [
     'FirefoxResponseNotReceived',
     'WebDriverPatchError',
     'setup_logging',
-    'main'
+    'main',
+    'find_available_port'
 ]
 
 # Import utility functions from the original firefox_controller.py
-from .utils import setup_logging, main
+from .utils import setup_logging, main, find_available_port

@@ -54,18 +54,18 @@ class FirefoxExecutionManager:
     def __init__(self,
                  binary: str = "firefox",
                  host: str = "localhost",
-                 port: int = 9222,
+                 port: Optional[int] = 9222,
                  websocket_timeout: int = 10,
                  headless: bool = False,
                  additional_options: List[str] = None,
                  profile_dir: str = None):
         """
         Initialize Firefox execution manager.
-        
+
         Args:
             binary: Path to Firefox binary
             host: Host to connect to
-            port: Debug port to use (2828 for Marionette)
+            port: Debug port to use (9222 default, None for automatic selection)
             websocket_timeout: WebSocket timeout in seconds
             headless: Run Firefox in headless mode
             additional_options: Additional command line options for Firefox
@@ -73,7 +73,15 @@ class FirefoxExecutionManager:
         """
         self.binary = binary
         self.host = host
-        self.port = port
+        self.log = logging.getLogger("FirefoxController.ExecutionManager")
+
+        # Handle automatic port selection
+        if port is None:
+            from .utils import find_available_port
+            self.port = find_available_port()
+            self.log.info("Auto-selected port: {}".format(self.port))
+        else:
+            self.port = port
         self.websocket_timeout = websocket_timeout
         self.headless = headless
         self.additional_options = additional_options or []
@@ -194,7 +202,7 @@ user_pref("devtools.remote.force-local", true);
 user_pref("devtools.debugger.force-local", true);
 user_pref("devtools.debugger.chrome-enabled", true);
 user_pref("devtools.debugger.remote-mode", true);
-user_pref("devtools.debugger.remote-port", 6000);
+user_pref("devtools.debugger.remote-port", {});
 user_pref("devtools.debugger.remote-host", "localhost");
 
 // Auto-enable extensions without user interaction
@@ -203,7 +211,7 @@ user_pref("extensions.enabledScopes", 15);
 // Don't show first-run pages for extensions
 user_pref("extensions.getAddons.showPane", false);
 user_pref("extensions.update.enabled", false);
-"""
+""".format(self.port)
             with open(prefs_file, "w") as f:
                 f.write(prefs_content)
             self.log.info("Created new prefs.js in profile")
@@ -366,8 +374,20 @@ user_pref("extensions.update.enabled", false);
             self.log.warning("WebDriver BiDi initialization failed: {}".format(e))
             raise FirefoxCommunicationsError("Failed to initialize WebDriver BiDi connection: {}".format(e))
     
-    def _send_message(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        """Send a message to Firefox and wait for response (thread-safe)"""
+    def _send_message(self, message: Dict[str, Any], timeout: Optional[int] = None) -> Dict[str, Any]:
+        """Send a message to Firefox and wait for response (thread-safe)
+
+        Args:
+            message: WebDriver BiDi message to send
+            timeout: Timeout in seconds (defaults to websocket_timeout)
+
+        Returns:
+            Response message from Firefox
+
+        Raises:
+            FirefoxResponseNotReceived: If no response received within timeout
+            FirefoxError: If Firefox returns an error response
+        """
         if not self.ws_connection:
             raise FirefoxCommunicationsError("WebSocket not connected")
 
@@ -385,7 +405,7 @@ user_pref("extensions.update.enabled", false);
                 self.ws_connection.send(message_str)
 
                 # Wait for response with matching ID
-                timeout = 10
+                timeout = timeout if timeout is not None else self.websocket_timeout
                 start_time = time.time()
 
                 while time.time() - start_time < timeout:
@@ -425,8 +445,14 @@ user_pref("extensions.update.enabled", false);
                     # For now, just continue waiting for our response
 
 
-                raise FirefoxCommunicationsError("Timeout waiting for response with ID {}".format(expected_id))
+                raise FirefoxResponseNotReceived("Timeout waiting for response with ID {} after {} seconds".format(expected_id, timeout))
 
+            except FirefoxResponseNotReceived:
+                # Re-raise timeout exceptions as-is
+                raise
+            except FirefoxError:
+                # Re-raise Firefox errors as-is
+                raise
             except Exception as e:
                 raise FirefoxCommunicationsError("Failed to send message: {}".format(e))
 
