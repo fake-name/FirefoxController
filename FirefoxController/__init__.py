@@ -21,7 +21,12 @@ from .exceptions import (
     FirefoxError,
     FirefoxDiedError,
     FirefoxNavigateTimedOut,
-    FirefoxResponseNotReceived
+    FirefoxResponseNotReceived,
+    BrowserOperationError,
+    BrowserTimeoutError,
+    BrowserNavigationError,
+    BrowserContentError,
+    BrowserDownloadError
 )
 
 # Main exports
@@ -37,6 +42,11 @@ __all__ = [
     'FirefoxDiedError',
     'FirefoxNavigateTimedOut',
     'FirefoxResponseNotReceived',
+    'BrowserOperationError',
+    'BrowserTimeoutError',
+    'BrowserNavigationError',
+    'BrowserContentError',
+    'BrowserDownloadError',
     'WebDriverPatchError',
     'setup_logging',
     'main',

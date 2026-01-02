@@ -21,6 +21,7 @@ import base64
 import queue
 import threading
 import urllib.request
+import signal
 from typing import Optional, Dict, Any, List, Union
 from urllib.parse import urlparse
 
@@ -409,7 +410,18 @@ user_pref("extensions.update.enabled", false);
                 start_time = time.time()
 
                 while time.time() - start_time < timeout:
-                    response_str = self.ws_connection.recv()
+                    # Calculate remaining timeout
+                    remaining_timeout = timeout - (time.time() - start_time)
+                    if remaining_timeout <= 0:
+                        break
+
+                    try:
+                        # Pass timeout to recv() to prevent infinite blocking
+                        response_str = self.ws_connection.recv(timeout=remaining_timeout)
+                    except TimeoutError:
+                        # WebSocket timeout - break out and raise FirefoxResponseNotReceived
+                        break
+
                     self.log.debug("Received response: {}".format(response_str))
 
                     response = json.loads(response_str)
@@ -531,46 +543,37 @@ user_pref("extensions.update.enabled", false);
     def _receive_event(self, event_type: str, params: dict, timeout: int = 5) -> Optional[Dict[str, Any]]:
         """Receive a specific event from the WebSocket"""
         try:
-            # Set timeout on the WebSocket connection
-            original_timeout = self.ws_connection.gettimeout()
-            self.ws_connection.settimeout(timeout)
-            
+            # Use the websockets library's timeout parameter (not settimeout/gettimeout)
             try:
-                response_str = self.ws_connection.recv()
+                response_str = self.ws_connection.recv(timeout=timeout)
                 response = json.loads(response_str)
-                
+
                 # Check if this is the event we're looking for
                 if (response.get("method") == event_type and
                     self._dictionaries_match(params, response.get("params", {}), False)):
                     return response
-                
+
                 # If it's an error, raise it
                 if response.get("type") == "error":
                     error_msg = response.get("message", "Unknown error")
                     raise FirefoxError("Firefox error: {}".format(error_msg))
-                
+
                 # If it's a response to a previous message, ignore it
                 if "id" in response:
                     # This is a response to a previous request, not an event
                     # Continue waiting for the actual event
                     return None
-                
+
                 # If we got a message but it's not what we want, continue waiting
                 return None
-                
-            except websocket.WebSocketTimeoutException:
-                # Timeout occurred
+
+            except TimeoutError:
+                # Timeout occurred - websockets library raises TimeoutError
                 return None
             except Exception as e:
                 self.log.debug("Error receiving event: {}".format(e))
                 return None
-            finally:
-                # Restore original timeout
-                try:
-                    self.ws_connection.settimeout(original_timeout)
-                except:
-                    pass
-                    
+
         except Exception as e:
             self.log.debug("Error receiving event: {}".format(e))
             return None
@@ -896,8 +899,15 @@ user_pref("extensions.update.enabled", false);
             self.log.error("Failed to close all tabs: {}".format(e))
             return False
     
-    def close(self):
-        """Close connection and stop Firefox"""
+    def close(self, sigint_timeout=20, sigkill_timeout=30):
+        """
+        Close connection and stop Firefox with graceful shutdown escalation.
+
+        Args:
+            sigint_timeout: Seconds to wait after SIGINT before escalating (default: 20)
+            sigkill_timeout: Seconds to wait after SIGKILL before giving up (default: 30)
+        """
+        # Step 1: End WebSocket session properly
         try:
             if self.ws_connection:
                 # End the WebDriver BiDi session properly
@@ -911,16 +921,55 @@ user_pref("extensions.update.enabled", false);
                 self.ws_connection.close()
         except:
             pass
-        
-        try:
-            if self.process and self.process.poll() is None:
-                self.process.terminate()
-                self.process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
-        except:
-            pass
-        
+
+        # Step 2: Gracefully shutdown Firefox process
+        if self.process and self.process.poll() is None:
+            pid = self.process.pid
+            self.log.info("Shutting down Firefox process (PID: {})".format(pid))
+
+            # Try SIGINT (Ctrl+C) first for graceful shutdown
+            try:
+                self.log.info("Sending SIGINT to Firefox process...")
+                os.kill(pid, signal.SIGINT)
+
+                # Wait for process to terminate gracefully
+                try:
+                    self.process.wait(timeout=sigint_timeout)
+                    self.log.info("Firefox terminated gracefully after SIGINT")
+                except subprocess.TimeoutExpired:
+                    # Process didn't terminate, escalate to SIGKILL
+                    self.log.warning("Firefox did not respond to SIGINT after {} seconds, escalating to SIGKILL...".format(sigint_timeout))
+
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                        self.log.info("Sent SIGKILL to Firefox process")
+
+                        # Wait for process to die after SIGKILL
+                        try:
+                            self.process.wait(timeout=sigkill_timeout)
+                            self.log.info("Firefox killed with SIGKILL")
+                        except subprocess.TimeoutExpired:
+                            self.log.error("Firefox did not terminate even after SIGKILL (waited {} seconds)".format(sigkill_timeout))
+
+                    except ProcessLookupError:
+                        self.log.info("Firefox process already terminated")
+                    except Exception as e:
+                        self.log.error("Error sending SIGKILL: {}".format(e))
+
+            except ProcessLookupError:
+                self.log.info("Firefox process already terminated")
+            except Exception as e:
+                self.log.error("Error during Firefox shutdown: {}".format(e))
+                # Try the old method as fallback
+                try:
+                    self.process.terminate()
+                    self.process.wait(timeout=5)
+                except:
+                    try:
+                        self.process.kill()
+                    except:
+                        pass
+
         # Clean up temporary profile
         try:
             if self.temp_profile and os.path.exists(self.temp_profile):
@@ -928,7 +977,8 @@ user_pref("extensions.update.enabled", false);
                 self.log.debug("Cleaned up temporary profile: {}".format(self.temp_profile))
         except:
             pass
-        
+
+        # Clear all state
         self.ws_connection = None
         self.process = None
         self.tabs = {}

@@ -175,6 +175,119 @@ class TestHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             binary_data = bytes(range(256))
             self.wfile.write(binary_data)
             return
+        elif parsed_url.path == "/timeout/infinite":
+            # Page that never finishes loading - sends headers but never completes
+            self.send_response(200)
+            self.send_header("Content-type", "text/html")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+
+            # Send partial content but never finish
+            chunk = b"<html><head><title>Infinite Loading</title></head><body><h1>This page will never finish loading..."
+            self.wfile.write(b"%X\r\n%s\r\n" % (len(chunk), chunk))
+            self.wfile.flush()
+
+            # Wait for server shutdown or client timeout
+            import threading
+            event = threading.Event()
+            if hasattr(self.server, 'test_server_instance'):
+                self.server.test_server_instance.shutdown_events.append(event)
+            event.wait(timeout=120)  # Wait max 120s or until shutdown
+            return
+
+        elif parsed_url.path == "/timeout/slow":
+            # Page that loads very slowly but eventually completes
+            delay = int(parse_qs(parsed_url.query).get('delay', ['10'])[0])
+
+            self.send_response(200)
+            self.send_header("Content-type", "text/html")
+            self.end_headers()
+
+            # Wait before sending content
+            time.sleep(delay)
+
+            html = """<html>
+<head><title>Slow Page</title></head>
+<body>
+    <h1>Slow Loading Page</h1>
+    <p>This page took {delay} seconds to load.</p>
+</body>
+</html>""".format(delay=delay)
+            self.wfile.write(html.encode())
+            return
+
+        elif parsed_url.path == "/timeout/partial":
+            # Page that sends partial content then stalls
+            self.send_response(200)
+            self.send_header("Content-type", "text/html")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+
+            # Send some chunks with delays
+            chunks = [
+                b"<html><head><title>Partial Page</title></head><body>",
+                b"<h1>Loading...</h1>",
+                b"<p>This page sends partial content</p>",
+            ]
+
+            for chunk in chunks:
+                self.wfile.write(b"%X\r\n%s\r\n" % (len(chunk), chunk))
+                self.wfile.flush()
+                time.sleep(1)
+
+            # Wait for server shutdown or client timeout
+            import threading
+            event = threading.Event()
+            if hasattr(self.server, 'test_server_instance'):
+                self.server.test_server_instance.shutdown_events.append(event)
+            event.wait(timeout=120)  # Wait max 120s or until shutdown
+            return
+
+        elif parsed_url.path == "/timeout/stuck-resource":
+            # Page that loads but has a stuck resource (image/script that never loads)
+            self.send_response(200)
+            self.send_header("Content-type", "text/html")
+            self.end_headers()
+
+            html = """<html>
+<head>
+    <title>Stuck Resource Page</title>
+    <!-- This script will never load -->
+    <script src="/timeout/infinite-resource.js"></script>
+</head>
+<body>
+    <h1>Page with Stuck Resource</h1>
+    <p>The HTML loaded but a resource is stuck.</p>
+    <!-- This image will never load -->
+    <img src="/timeout/infinite-resource.png" alt="Stuck image">
+</body>
+</html>"""
+            self.wfile.write(html.encode())
+            return
+
+        elif parsed_url.path == "/timeout/infinite-resource.js" or parsed_url.path == "/timeout/infinite-resource.png":
+            # Resource that never finishes loading
+            self.send_response(200)
+            if parsed_url.path.endswith('.js'):
+                self.send_header("Content-type", "application/javascript")
+            else:
+                self.send_header("Content-type", "image/png")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+
+            # Send partial content and stall
+            chunk = b"// Partial content..."
+            self.wfile.write(b"%X\r\n%s\r\n" % (len(chunk), chunk))
+            self.wfile.flush()
+
+            # Wait for server shutdown or client timeout
+            import threading
+            event = threading.Event()
+            if hasattr(self.server, 'test_server_instance'):
+                self.server.test_server_instance.shutdown_events.append(event)
+            event.wait(timeout=120)  # Wait max 120s or until shutdown
+            return
+
         elif parsed_url.path == "/download/large.bin":
             # Serve a large file (5MB) to test chunking
             file_size = 5 * 1024 * 1024  # 5MB
@@ -240,12 +353,13 @@ class TestHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 
 class TestServer:
     """Test server that can be started and stopped"""
-    
+
     def __init__(self, port=9000):
         self.port = port
         self.server = None
         self.server_thread = None
         self.base_url = "http://localhost:{}".format(port)
+        self.shutdown_events = []  # Track events to signal on shutdown
     
     def start(self):
         """Start the test server in a background thread"""
@@ -255,6 +369,8 @@ class TestServer:
         # Try to create server, handle port conflicts
         try:
             self.server = socketserver.TCPServer(("localhost", self.port), TestHTTPRequestHandler)
+            # Give request handler access to this instance for shutdown events
+            self.server.test_server_instance = self
             
             # Start server in background thread
             self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -277,6 +393,8 @@ class TestServer:
                 
                 # Create server with new port
                 self.server = socketserver.TCPServer(("localhost", self.port), TestHTTPRequestHandler)
+                # Give request handler access to this instance for shutdown events
+                self.server.test_server_instance = self
                 self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
                 self.server_thread.start()
                 
@@ -291,13 +409,24 @@ class TestServer:
         """Stop the test server"""
         if self.server is None:
             return
-        
+
+        # Signal all waiting threads to finish
+        for event in self.shutdown_events:
+            event.set()
+
         self.server.shutdown()
         self.server.server_close()
         self.server = None
         self.server_thread = None
-        
+
         print("Test server stopped")
+
+    def __del__(self):
+        """Ensure server is stopped on deletion"""
+        try:
+            self.stop()
+        except:
+            pass
     
     def get_url(self, path=""):
         """Get full URL for a path"""

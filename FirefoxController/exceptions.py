@@ -50,3 +50,29 @@ class FirefoxNavigateTimedOut(FirefoxControllerException):
 class FirefoxResponseNotReceived(FirefoxControllerException):
     """Exception raised when expected response is not received"""
     pass
+
+
+# Browser operation exceptions for higher-level operations
+class BrowserOperationError(FirefoxControllerException):
+    """Base exception for all browser operation failures"""
+    pass
+
+
+class BrowserTimeoutError(BrowserOperationError):
+    """Raised when a browser operation times out"""
+    pass
+
+
+class BrowserNavigationError(BrowserOperationError):
+    """Raised when browser navigation fails"""
+    pass
+
+
+class BrowserContentError(BrowserOperationError):
+    """Raised when browser content retrieval fails"""
+    pass
+
+
+class BrowserDownloadError(BrowserOperationError):
+    """Raised when browser file download fails"""
+    pass
