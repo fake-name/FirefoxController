@@ -22,6 +22,7 @@ import queue
 import threading
 import urllib.request
 import signal
+import re
 from typing import Optional, Dict, Any, List, Union
 from urllib.parse import urlparse
 
@@ -177,6 +178,117 @@ class FirefoxExecutionManager:
             self.log.warning("Failed to download uBlock Origin: {}".format(e))
             # Don't raise - extension is optional, continue without it
 
+    def _create_user_js(self, profile_path: str):
+        """
+        Create user.js file with cookie persistence preferences.
+
+        user.js takes precedence over prefs.js and Firefox doesn't modify it,
+        making it perfect for enforcing cookie persistence settings.
+
+        Args:
+            profile_path: Path to the Firefox profile directory
+        """
+        user_js_file = os.path.join(profile_path, "user.js")
+
+        # Create user.js with cookie persistence preferences
+        # These override any prefs.js settings and aren't modified by Firefox
+        user_js_content = """// Cookie persistence settings (enforced by FirefoxController)
+// These settings prevent Firefox from clearing cookies on shutdown
+
+// CRITICAL: Disable the master sanitization toggle
+user_pref("privacy.sanitize.sanitizeOnShutdown", false);
+user_pref("privacy.sanitize.sanitizeOnShutdown.v2", false);
+
+// Disable clearing individual data types on shutdown (old preferences)
+user_pref("privacy.clearOnShutdown.cookies", false);
+user_pref("privacy.clearOnShutdown.cache", false);
+user_pref("privacy.clearOnShutdown.offlineApps", false);
+user_pref("privacy.clearOnShutdown.sessions", false);
+user_pref("privacy.clearOnShutdown.formdata", false);
+user_pref("privacy.clearOnShutdown.history", false);
+user_pref("privacy.clearOnShutdown.siteSettings", false);
+user_pref("privacy.clearOnShutdown.downloads", false);
+user_pref("privacy.clearOnShutdown.openWindows", false);
+
+// Disable clearing individual data types on shutdown (v2 preferences for newer Firefox)
+user_pref("privacy.clearOnShutdown_v2.cookiesAndStorage", false);
+user_pref("privacy.clearOnShutdown_v2.cache", false);
+user_pref("privacy.clearOnShutdown_v2.formdata", false);
+user_pref("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", false);
+user_pref("privacy.clearOnShutdown_v2.siteSettings", false);
+
+// Prevent Firefox from deleting cookies on shutdown (WebDriver-specific fix)
+user_pref("network.cookie.lifetimePolicy", 0);  // 0 = keep cookies until they expire
+user_pref("places.history.enabled", true);  // Enable history to prevent cookie clearing
+
+// Disable remote debugging recommended preferences that might clear cookies
+user_pref("remote.prefs.recommended.applied", false);
+
+// Ensure cookies are saved to disk immediately
+user_pref("network.cookie.cookieBehavior", 0);  // Accept all cookies
+user_pref("browser.privatebrowsing.autostart", false);  // Disable private browsing
+user_pref("browser.cache.disk.enable", true);  // Enable disk cache
+user_pref("browser.cache.memory.enable", true);  // Enable memory cache
+"""
+
+        with open(user_js_file, 'w') as f:
+            f.write(user_js_content)
+
+        self.log.info("Created user.js with cookie persistence settings")
+
+    def _ensure_cookie_persistence(self, profile_path: str):
+        """
+        Ensure privacy preferences don't clear cookies on shutdown.
+
+        This method checks the Firefox profile's prefs.js file for problematic
+        privacy preferences that would clear cookies on browser shutdown, and
+        corrects them if needed.
+
+        Args:
+            profile_path: Path to the Firefox profile directory
+        """
+        prefs_file = os.path.join(profile_path, "prefs.js")
+
+        # Preferences that should be set to preserve cookies
+        # Include both old and new (v2) preference names for compatibility
+        required_prefs = {
+            "privacy.sanitize.sanitizeOnShutdown": "false",
+            "privacy.clearOnShutdown.cookies": "false",
+            "privacy.clearOnShutdown.cache": "false",
+            "privacy.clearOnShutdown.offlineApps": "false",
+            "privacy.clearOnShutdown.sessions": "false",
+            "privacy.clearOnShutdown.formdata": "false",
+            "privacy.clearOnShutdown.history": "false",
+            # Version 2 preferences (newer Firefox versions)
+            "privacy.clearOnShutdown_v2.cookiesAndStorage": "false",
+            "privacy.clearOnShutdown_v2.cache": "false",
+            "privacy.clearOnShutdown_v2.formdata": "false",
+            "privacy.clearOnShutdown_v2.historyFormDataAndDownloads": "false",
+        }
+
+        # Read existing prefs if file exists
+        if os.path.exists(prefs_file):
+            with open(prefs_file, 'r') as f:
+                content = f.read()
+
+            # Check which prefs need to be added/fixed
+            prefs_to_add = []
+            for pref_name, pref_value in required_prefs.items():
+                # Use regex to check if preference exists and what its value is
+                pattern = r'user_pref\("{0}",\s*(true|false)\);'.format(re.escape(pref_name))
+                match = re.search(pattern, content)
+
+                if not match or match.group(1) != pref_value:
+                    prefs_to_add.append('user_pref("{0}", {1});'.format(pref_name, pref_value))
+
+            # Append missing/incorrect preferences
+            if prefs_to_add:
+                with open(prefs_file, 'a') as f:
+                    f.write('\n// Cookie persistence settings (added by FirefoxController)\n')
+                    for pref_line in prefs_to_add:
+                        f.write(pref_line + '\n')
+                self.log.info("Updated {} privacy preferences to preserve cookies".format(len(prefs_to_add)))
+
     def _create_profile(self) -> str:
         """Create a temporary Firefox profile with required preferences"""
         # Use provided profile directory
@@ -212,12 +324,32 @@ user_pref("extensions.enabledScopes", 15);
 // Don't show first-run pages for extensions
 user_pref("extensions.getAddons.showPane", false);
 user_pref("extensions.update.enabled", false);
+
+// Prevent clearing cookies and other data on shutdown
+user_pref("privacy.sanitize.sanitizeOnShutdown", false);
+user_pref("privacy.clearOnShutdown.cookies", false);
+user_pref("privacy.clearOnShutdown.cache", false);
+user_pref("privacy.clearOnShutdown.offlineApps", false);
+user_pref("privacy.clearOnShutdown.sessions", false);
+user_pref("privacy.clearOnShutdown.formdata", false);
+user_pref("privacy.clearOnShutdown.history", false);
+// Version 2 preferences for newer Firefox versions
+user_pref("privacy.clearOnShutdown_v2.cookiesAndStorage", false);
+user_pref("privacy.clearOnShutdown_v2.cache", false);
+user_pref("privacy.clearOnShutdown_v2.formdata", false);
+user_pref("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", false);
 """.format(self.port)
             with open(prefs_file, "w") as f:
                 f.write(prefs_content)
             self.log.info("Created new prefs.js in profile")
         else:
             self.log.debug("Using existing prefs.js (user customizations preserved)")
+
+        # Create user.js for cookie persistence (overrides prefs.js and isn't modified by Firefox)
+        self._create_user_js(profile_path)
+
+        # Also ensure cookie persistence preferences are set correctly in prefs.js
+        self._ensure_cookie_persistence(profile_path)
 
         return profile_path
     
@@ -240,6 +372,7 @@ user_pref("extensions.update.enabled", false);
         
         # Enable WebDriver BiDi (the modern standard)
         cmd.extend([
+            "--remote-allow-system-access",
             "--remote-debugging-port", str(self.port),  # Start the Firefox Remote Agent
             "--remote-allow-hosts", "localhost,127.0.0.1",  # Allow local connections
             "--remote-allow-origins", "http://localhost,http://127.0.0.1",  # Allow local origins
@@ -334,20 +467,19 @@ user_pref("extensions.update.enabled", false);
                 }
             })
             
-            # Create the browsing context
-            user_context = self._send_message({
-                'method': 'browser.createUserContext',
-                'params': {}
-            })['result']['userContext']
-            
+            # Use default user context instead of creating a new one
+            # This allows cookies to persist across browser restarts
+            # (creating a new user context each time would isolate cookies)
+            user_context = 'default'
+
             self.user_context = user_context
-            
+
             # Create browsing context and handle the event response
             create_response = self._send_message({
                 'method': 'browsingContext.create',
                 'params': {
-                    'type': 'tab',
-                    'userContext': user_context
+                    'type': 'tab'
+                    # Don't specify userContext to use the default context
                 }
             })
             
@@ -358,9 +490,7 @@ user_pref("extensions.update.enabled", false);
                 self.browsing_context = create_response['result']['context']
             else:
                 # If we get an event but not the right one, listen for the correct event
-                event = self._receive_event('browsingContext.domContentLoaded', {
-                    'userContext': user_context
-                }, timeout=5)
+                event = self._receive_event('browsingContext.domContentLoaded', {}, timeout=5)
                 if event:
                     self.browsing_context = event['params']['context']
                 else:
@@ -608,11 +738,11 @@ user_pref("extensions.update.enabled", false);
             create_response = self._send_message({
                 'method': 'browsingContext.create',
                 'params': {
-                    'type': 'tab',
-                    'userContext': self.user_context
+                    'type': 'tab'
+                    # Use default user context for cookie persistence
                 }
             })
-            
+
             # Extract the new context ID
             if create_response.get('type') == 'event' and create_response.get('method') == 'browsingContext.domContentLoaded':
                 new_context = create_response['params']['context']
@@ -620,9 +750,7 @@ user_pref("extensions.update.enabled", false);
                 new_context = create_response['result']['context']
             else:
                 # Listen for the domContentLoaded event
-                event = self._receive_event('browsingContext.domContentLoaded', {
-                    'userContext': self.user_context
-                }, timeout=5)
+                event = self._receive_event('browsingContext.domContentLoaded', {}, timeout=5)
                 if event:
                     new_context = event['params']['context']
                 else:

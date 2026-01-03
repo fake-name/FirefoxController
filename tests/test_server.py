@@ -66,6 +66,15 @@ class TestHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"<html><body><h1>Cookie Set</h1></body></html>")
             return
+        elif parsed_url.path == "/set-persistent-cookie":
+            # Set a PERSISTENT test cookie with expiry
+            self.send_response(200)
+            self.send_header("Content-type", "text/html")
+            # Set cookie with Max-Age of 24 hours (86400 seconds)
+            self.send_header("Set-Cookie", "persistent_test_cookie=persistent_value; Path=/; Max-Age=86400")
+            self.end_headers()
+            self.wfile.write(b"<html><body><h1>Persistent Cookie Set</h1><p>Cookie: persistent_test_cookie=persistent_value (expires in 24 hours)</p></body></html>")
+            return
         elif parsed_url.path == "/check-cookie":
             # Check if cookie was sent
             cookies = self.headers.get("Cookie", "")
