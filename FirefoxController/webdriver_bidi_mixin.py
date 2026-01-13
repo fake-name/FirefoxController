@@ -1233,9 +1233,46 @@ class WebDriverBiDiMixin:
             return False
     
     # ========================================================================
+    # Log Commands (Console)
+    # ========================================================================
+
+    def bidi_subscribe_to_log_events(self, contexts: List[str] = None) -> bool:
+        """
+        Subscribe to log.entryAdded events to receive console messages.
+
+        This enables capturing of console.log(), console.warn(), console.error(),
+        and JavaScript error messages from the browser.
+
+        Args:
+            contexts: Optional list of browsing context IDs to filter events to.
+                     If None, subscribes to events from all contexts.
+
+        Returns:
+            True if subscription was successful, False otherwise
+
+        Example:
+            >>> firefox.bidi_subscribe_to_log_events()
+            True
+            >>> # Now console messages will be captured
+        """
+        return self.bidi_subscribe(['log.entryAdded'], contexts)
+
+    def bidi_unsubscribe_from_log_events(self, contexts: List[str] = None) -> bool:
+        """
+        Unsubscribe from log.entryAdded events.
+
+        Args:
+            contexts: Optional list of browsing context IDs to filter unsubscription
+
+        Returns:
+            True if unsubscription was successful, False otherwise
+        """
+        return self.bidi_unsubscribe(['log.entryAdded'], contexts)
+
+    # ========================================================================
     # Utility Methods
     # ========================================================================
-    
+
     def bidi_wait_for_event(self, event_type: str, timeout: int = 10,
                            filter_params: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
         """

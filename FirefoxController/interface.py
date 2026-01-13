@@ -16,6 +16,7 @@ from typing import Optional, Dict, Any, List, Union
 from .execution_manager import FirefoxExecutionManager
 from .exceptions import FirefoxError, FirefoxNavigateTimedOut
 from .webdriver_bidi_mixin import WebDriverBiDiMixin
+from .bidi_types import ConsoleLogEntry
 
 
 class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
@@ -72,6 +73,10 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
         self._request_log_cache = {}  # url -> {'url': url, 'mimetype': str, 'content': bytes}
         self._data_collector_id = None
 
+        # Console logging state (per-tab)
+        self._console_logging_enabled = False
+        self._console_messages = []  # List of ConsoleLogEntry objects
+
         # Default timeout for operations (can be changed with set_default_timeout())
         self.default_timeout = 30
     
@@ -88,6 +93,13 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
                 self.disable_request_logging()
             except Exception as e:
                 self.log.debug("Error disabling request logging on exit: {}".format(e))
+
+        # Disable console logging if enabled
+        if self._console_logging_enabled:
+            try:
+                self.disable_console_logging()
+            except Exception as e:
+                self.log.debug("Error disabling console logging on exit: {}".format(e))
 
         return self.manager.__exit__(exc_type, exc_val, exc_tb)
 
@@ -887,6 +899,355 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
         """
         self._request_log_cache.clear()
         self.log.debug("Request log cache cleared")
+
+    # ========================================================================
+    # Console Logging Methods
+    # ========================================================================
+
+    def enable_console_logging(self) -> bool:
+        """
+        Enable console message logging for this browsing context.
+
+        This will start capturing console.log(), console.warn(), console.error(),
+        console.info(), console.debug(), and JavaScript error messages.
+
+        You must call poll_console_events() periodically to process captured messages,
+        or use get_console_messages() which will automatically poll first.
+
+        Returns:
+            True if console logging was enabled successfully, False otherwise
+
+        Example:
+            >>> firefox.enable_console_logging()
+            True
+            >>> firefox.execute_javascript_statement('console.log("Hello!")')
+            >>> firefox.poll_console_events()
+            >>> messages = firefox.get_console_messages()
+            >>> print(messages[0].text)
+            Hello!
+        """
+        if self._console_logging_enabled:
+            self.log.warning("Console logging already enabled")
+            return True
+
+        try:
+            context = self.active_browsing_context or self.manager.browsing_context
+            if not context:
+                raise FirefoxError("No browsing context available")
+
+            # Subscribe to log events using the manager's tracking
+            with self.manager.console_subscription_lock:
+                if not self.manager.console_events_subscribed:
+                    # First tab to enable console logging - subscribe globally
+                    success = self.bidi_subscribe_to_log_events()
+                    if not success:
+                        self.log.error("Failed to subscribe to log events")
+                        return False
+                    self.manager.console_events_subscribed = True
+                    self.log.debug("Subscribed to console log events globally")
+
+                self.manager.console_logging_refs += 1
+                self.log.debug("Console logging refs: {}".format(self.manager.console_logging_refs))
+
+            # Register this interface for automatic polling
+            with self.manager._console_interfaces_lock:
+                if self not in self.manager._console_interfaces:
+                    self.manager._console_interfaces.append(self)
+
+            # Track this context as having console logging enabled
+            with self.manager.console_contexts_lock:
+                self.manager.console_enabled_contexts.add(context)
+
+            self._console_logging_enabled = True
+            self.log.info("Console logging enabled - call poll_console_events() to process messages")
+            return True
+
+        except Exception as e:
+            self.log.error("Failed to enable console logging: {}".format(e))
+            return False
+
+    def disable_console_logging(self) -> bool:
+        """
+        Disable console message logging for this browsing context.
+
+        This will stop capturing console messages but will preserve any
+        messages already captured. Call clear_console_messages() to also
+        clear the message buffer.
+
+        Returns:
+            True if console logging was disabled successfully, False otherwise
+        """
+        if not self._console_logging_enabled:
+            return True
+
+        try:
+            # Unregister this interface from automatic polling
+            with self.manager._console_interfaces_lock:
+                if self in self.manager._console_interfaces:
+                    self.manager._console_interfaces.remove(self)
+
+            # Remove this context from console logging enabled set
+            context = self.active_browsing_context or self.manager.browsing_context
+            with self.manager.console_contexts_lock:
+                self.manager.console_enabled_contexts.discard(context)
+
+            # Use global subscription approach for multi-tab support
+            with self.manager.console_subscription_lock:
+                self.manager.console_logging_refs -= 1
+                self.log.debug("Console logging refs: {}".format(self.manager.console_logging_refs))
+
+                if self.manager.console_logging_refs == 0 and self.manager.console_events_subscribed:
+                    # Last tab to disable logging - unsubscribe globally
+                    self.bidi_unsubscribe_from_log_events()
+                    self.manager.console_events_subscribed = False
+                    self.log.debug("Unsubscribed from console log events globally")
+
+            self._console_logging_enabled = False
+            self.log.info("Console logging disabled")
+            return True
+
+        except Exception as e:
+            self.log.error("Failed to disable console logging: {}".format(e))
+            return False
+
+    def poll_console_events(self, timeout: float = 0.1) -> int:
+        """
+        Poll for new console events and process them.
+
+        This reads from the WebSocket and processes any log.entryAdded events
+        for this browsing context.
+
+        Args:
+            timeout: How long to wait for events (seconds)
+
+        Returns:
+            Number of console events processed
+        """
+        if not self._console_logging_enabled:
+            return 0
+
+        # Poll WebSocket for new events (distributes to per-tab queues)
+        self.manager.poll_for_events(timeout)
+
+        # Process console events for this tab
+        return self._process_console_events()
+
+    def _process_console_events(self, max_events: int = 100) -> int:
+        """
+        Process pending console events from this tab's event queue.
+
+        Args:
+            max_events: Maximum number of events to process in one call
+
+        Returns:
+            Number of events processed
+        """
+        if not self._console_logging_enabled:
+            return 0
+
+        events_processed = 0
+        context = self.active_browsing_context or self.manager.browsing_context
+
+        # Get this tab's console event queue
+        console_queue = self.manager.get_console_queue_for_context(context)
+
+        for _ in range(max_events):
+            try:
+                # Non-blocking get from this tab's queue
+                event = console_queue.get_nowait()
+
+                method = event.get("method")
+                self.log.debug("_process_console_events: Got event with method={}".format(method))
+
+                # Check if this is a log.entryAdded event
+                if method == "log.entryAdded":
+                    # Parse the event into a ConsoleLogEntry
+                    log_entry = ConsoleLogEntry.from_bidi_event(event)
+                    self._console_messages.append(log_entry)
+                    events_processed += 1
+                    self.log.debug("Captured console message: {}".format(log_entry))
+
+            except:
+                # Queue is empty
+                break
+
+        if events_processed > 0:
+            self.log.debug("_process_console_events: Processed {} console events".format(events_processed))
+
+        return events_processed
+
+    def get_console_messages(self, level: str = None, source: str = None,
+                            poll_first: bool = True) -> List[ConsoleLogEntry]:
+        """
+        Get captured console messages, optionally filtered by level or source.
+
+        Args:
+            level: Filter by log level ('debug', 'info', 'warn', 'error').
+                   If None, returns all levels.
+            source: Filter by source ('console', 'javascript').
+                    If None, returns all sources.
+            poll_first: If True, poll for new events before returning messages.
+                       This ensures you get the latest messages.
+
+        Returns:
+            List of ConsoleLogEntry objects matching the filter criteria
+
+        Example:
+            >>> firefox.enable_console_logging()
+            >>> firefox.execute_javascript_statement('console.error("Oops!")')
+            >>> errors = firefox.get_console_messages(level='error')
+            >>> print(len(errors))
+            1
+        """
+        if poll_first and self._console_logging_enabled:
+            self.poll_console_events()
+
+        messages = self._console_messages
+
+        # Apply level filter
+        if level:
+            messages = [m for m in messages if m.level == level]
+
+        # Apply source filter
+        if source:
+            messages = [m for m in messages if m.source == source]
+
+        return messages
+
+    def get_console_errors(self, poll_first: bool = True) -> List[ConsoleLogEntry]:
+        """
+        Get all console error messages.
+
+        This is a convenience method equivalent to get_console_messages(level='error').
+
+        Args:
+            poll_first: If True, poll for new events before returning messages.
+
+        Returns:
+            List of ConsoleLogEntry objects with error level
+        """
+        return self.get_console_messages(level='error', poll_first=poll_first)
+
+    def get_console_warnings(self, poll_first: bool = True) -> List[ConsoleLogEntry]:
+        """
+        Get all console warning messages.
+
+        This is a convenience method equivalent to get_console_messages(level='warn').
+
+        Args:
+            poll_first: If True, poll for new events before returning messages.
+
+        Returns:
+            List of ConsoleLogEntry objects with warn level
+        """
+        return self.get_console_messages(level='warn', poll_first=poll_first)
+
+    def get_javascript_errors(self, poll_first: bool = True) -> List[ConsoleLogEntry]:
+        """
+        Get all JavaScript errors (uncaught exceptions, syntax errors, etc.).
+
+        This returns errors from the 'javascript' source, which are distinct
+        from console.error() calls (which have source='console').
+
+        Args:
+            poll_first: If True, poll for new events before returning messages.
+
+        Returns:
+            List of ConsoleLogEntry objects from JavaScript source with error level
+        """
+        return self.get_console_messages(level='error', source='javascript', poll_first=poll_first)
+
+    def clear_console_messages(self):
+        """
+        Clear all captured console messages.
+
+        This clears the internal message buffer without disabling console logging.
+        Useful to prevent unbounded memory growth during long sessions.
+        """
+        self._console_messages.clear()
+        self.log.debug("Console messages cleared")
+
+    def wait_for_console_message(self, text_pattern: str = None, level: str = None,
+                                 timeout: float = 10.0, poll_interval: float = 0.1) -> Optional[ConsoleLogEntry]:
+        """
+        Wait for a console message matching the specified criteria.
+
+        This method polls for console events until a matching message is found
+        or the timeout is reached.
+
+        Args:
+            text_pattern: Substring to search for in message text (case-sensitive).
+                         If None, matches any text.
+            level: Log level to match ('debug', 'info', 'warn', 'error').
+                   If None, matches any level.
+            timeout: Maximum time to wait in seconds (default: 10)
+            poll_interval: How often to poll for new events (default: 0.1 seconds)
+
+        Returns:
+            The first ConsoleLogEntry matching the criteria, or None if timeout
+
+        Example:
+            >>> firefox.enable_console_logging()
+            >>> # In another thread or async: firefox.execute_javascript_statement('console.log("Ready!")')
+            >>> msg = firefox.wait_for_console_message(text_pattern="Ready")
+            >>> print(msg.text)
+            Ready!
+        """
+        if not self._console_logging_enabled:
+            self.log.warning("Console logging not enabled - call enable_console_logging() first")
+            return None
+
+        start_time = time.time()
+        checked_count = 0  # Track how many messages we've already checked
+
+        while time.time() - start_time < timeout:
+            # Poll for new events
+            self.poll_console_events(poll_interval)
+
+            # Check new messages (starting from where we left off)
+            for i in range(checked_count, len(self._console_messages)):
+                msg = self._console_messages[i]
+
+                # Check level match
+                if level and msg.level != level:
+                    continue
+
+                # Check text pattern match
+                if text_pattern and text_pattern not in msg.text:
+                    continue
+
+                # Match found!
+                return msg
+
+            # Update checked count
+            checked_count = len(self._console_messages)
+
+        self.log.debug("wait_for_console_message timed out after {} seconds".format(timeout))
+        return None
+
+    def has_console_errors(self, poll_first: bool = True) -> bool:
+        """
+        Check if any console errors have been captured.
+
+        Args:
+            poll_first: If True, poll for new events before checking.
+
+        Returns:
+            True if there are any error-level console messages
+        """
+        return len(self.get_console_errors(poll_first=poll_first)) > 0
+
+    def has_javascript_errors(self, poll_first: bool = True) -> bool:
+        """
+        Check if any JavaScript errors have been captured.
+
+        Args:
+            poll_first: If True, poll for new events before checking.
+
+        Returns:
+            True if there are any JavaScript errors
+        """
+        return len(self.get_javascript_errors(poll_first=poll_first)) > 0
 
     # ========================================================================
     # XHR Fetch Methods

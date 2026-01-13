@@ -28,6 +28,13 @@ from .exceptions import (
     BrowserContentError,
     BrowserDownloadError
 )
+from .bidi_types import (
+    ConsoleLogEntry,
+    LogLevel,
+    LogSource,
+    validate_log_level,
+    validate_log_source
+)
 
 # Main exports
 __all__ = [
@@ -50,7 +57,13 @@ __all__ = [
     'WebDriverPatchError',
     'setup_logging',
     'main',
-    'find_available_port'
+    'find_available_port',
+    # Console logging types
+    'ConsoleLogEntry',
+    'LogLevel',
+    'LogSource',
+    'validate_log_level',
+    'validate_log_source'
 ]
 
 # Import utility functions from the original firefox_controller.py

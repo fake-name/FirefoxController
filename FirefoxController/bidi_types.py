@@ -78,6 +78,20 @@ class CookieSameSite(Enum):
     NONE = "none"
 
 
+class LogLevel(Enum):
+    """Console log levels as defined in WebDriver-BiDi spec section 7.8"""
+    DEBUG = "debug"
+    INFO = "info"
+    WARN = "warn"
+    ERROR = "error"
+
+
+class LogSource(Enum):
+    """Console log sources as defined in WebDriver-BiDi spec section 7.8"""
+    CONSOLE = "console"
+    JAVASCRIPT = "javascript"
+
+
 def validate_browsing_context_type(context_type: str) -> str:
     """
     Validate browsing context type.
@@ -596,11 +610,171 @@ METHOD_SCHEMAS = {
 def get_method_schema(method_name: str) -> Optional[Dict[str, Any]]:
     """
     Get validation schema for a WebDriver-BiDi method.
-    
+
     Args:
         method_name: Name of the method
-        
+
     Returns:
         Validation schema or None if not found
     """
     return METHOD_SCHEMAS.get(method_name)
+
+
+def validate_log_level(level: str) -> str:
+    """
+    Validate console log level.
+
+    Args:
+        level: The log level to validate
+
+    Returns:
+        Validated log level
+
+    Raises:
+        BiDiTypeError: If the log level is invalid
+    """
+    try:
+        return LogLevel(level).value
+    except ValueError:
+        valid_levels = [l.value for l in LogLevel]
+        raise BiDiTypeError("Invalid log level '{}'. Valid levels: {}".format(level, valid_levels))
+
+
+def validate_log_source(source: str) -> str:
+    """
+    Validate console log source.
+
+    Args:
+        source: The log source to validate
+
+    Returns:
+        Validated log source
+
+    Raises:
+        BiDiTypeError: If the log source is invalid
+    """
+    try:
+        return LogSource(source).value
+    except ValueError:
+        valid_sources = [s.value for s in LogSource]
+        raise BiDiTypeError("Invalid log source '{}'. Valid sources: {}".format(source, valid_sources))
+
+
+class ConsoleLogEntry:
+    """
+    Represents a console log entry from WebDriver-BiDi log.entryAdded events.
+
+    Based on the W3C WebDriver-BiDi specification section 7.8.2.1 (log.LogEntry).
+
+    Attributes:
+        level: Log level (debug, info, warn, error)
+        source: Log source (console, javascript)
+        text: The log message text
+        timestamp: Unix timestamp in milliseconds
+        context_id: Browsing context ID where the log originated
+        stack_trace: Optional stack trace information
+        args: Optional list of arguments passed to the console method
+        method: The console method called (log, warn, error, etc.)
+    """
+
+    def __init__(self,
+                 level: str,
+                 source: str,
+                 text: str,
+                 timestamp: int,
+                 context_id: str = None,
+                 stack_trace: Optional[Dict[str, Any]] = None,
+                 args: Optional[List[Any]] = None,
+                 method: str = None):
+        """
+        Initialize a ConsoleLogEntry.
+
+        Args:
+            level: Log level (debug, info, warn, error)
+            source: Log source (console, javascript)
+            text: The log message text
+            timestamp: Unix timestamp in milliseconds
+            context_id: Browsing context ID where the log originated
+            stack_trace: Optional stack trace information
+            args: Optional list of arguments passed to the console method
+            method: The console method called (log, warn, error, etc.)
+        """
+        self.level = level
+        self.source = source
+        self.text = text
+        self.timestamp = timestamp
+        self.context_id = context_id
+        self.stack_trace = stack_trace
+        self.args = args or []
+        self.method = method
+
+    @classmethod
+    def from_bidi_event(cls, event: Dict[str, Any]) -> 'ConsoleLogEntry':
+        """
+        Create a ConsoleLogEntry from a WebDriver-BiDi log.entryAdded event.
+
+        Args:
+            event: The log.entryAdded event dictionary
+
+        Returns:
+            ConsoleLogEntry instance
+        """
+        params = event.get('params', {})
+
+        # Extract required fields
+        level = params.get('level', 'info')
+        source = params.get('source', {}).get('type', 'console') if isinstance(params.get('source'), dict) else params.get('source', 'console')
+        text = params.get('text', '')
+        timestamp = params.get('timestamp', 0)
+
+        # Extract optional fields
+        context_id = params.get('source', {}).get('context') if isinstance(params.get('source'), dict) else None
+        stack_trace = params.get('stackTrace')
+        args = params.get('args', [])
+        method = params.get('method')
+
+        return cls(
+            level=level,
+            source=source,
+            text=text,
+            timestamp=timestamp,
+            context_id=context_id,
+            stack_trace=stack_trace,
+            args=args,
+            method=method
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        Convert the ConsoleLogEntry to a dictionary.
+
+        Returns:
+            Dictionary representation of the log entry
+        """
+        result = {
+            'level': self.level,
+            'source': self.source,
+            'text': self.text,
+            'timestamp': self.timestamp
+        }
+
+        if self.context_id:
+            result['context_id'] = self.context_id
+        if self.stack_trace:
+            result['stack_trace'] = self.stack_trace
+        if self.args:
+            result['args'] = self.args
+        if self.method:
+            result['method'] = self.method
+
+        return result
+
+    def __repr__(self) -> str:
+        """String representation of the log entry."""
+        return "ConsoleLogEntry(level='{}', source='{}', text='{}', timestamp={})".format(
+            self.level, self.source, self.text[:50] + '...' if len(self.text) > 50 else self.text, self.timestamp
+        )
+
+    def __str__(self) -> str:
+        """Human-readable string representation."""
+        return "[{}] [{}] {}".format(self.level.upper(), self.source, self.text)

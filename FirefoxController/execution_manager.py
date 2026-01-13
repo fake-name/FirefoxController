@@ -131,6 +131,23 @@ class FirefoxExecutionManager:
         # Track interface instances with logging enabled for automatic polling
         self._logging_interfaces = []  # List of interface instances
         self._logging_interfaces_lock = threading.Lock()
+
+        # Track global console event subscription (shared across all tabs)
+        self.console_events_subscribed = False
+        self.console_logging_refs = 0  # Count of tabs with console logging enabled
+        self.console_subscription_lock = threading.Lock()
+
+        # Track which contexts have console logging enabled
+        self.console_enabled_contexts = set()
+        self.console_contexts_lock = threading.Lock()
+
+        # Track interface instances with console logging enabled
+        self._console_interfaces = []  # List of interface instances
+        self._console_interfaces_lock = threading.Lock()
+
+        # Per-tab console event queues for log.entryAdded events
+        self.console_queues = {}  # context_id -> queue.Queue()
+        self.console_queues_lock = threading.Lock()
         
     def _install_ublock_origin(self, profile_path: str):
         """
@@ -573,14 +590,35 @@ user_pref("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", false);
                     # If this is an event or a response for a different message, queue it
                     if response.get("type") == "event" or response.get("method"):
                         # This is an event - route it to the appropriate per-tab queue
+                        method = response.get("method", "")
+                        params = response.get("params", {})
                         context_id = None
-                        if "params" in response and "context" in response["params"]:
-                            context_id = response["params"]["context"]
 
-                        if context_id:
-                            event_queue = self.get_event_queue_for_context(context_id)
-                            event_queue.put(response)
-                        # If no context, discard it (shouldn't happen for network events)
+                        # For log.entryAdded events, context is nested in source.context
+                        if method == "log.entryAdded":
+                            source = params.get("source", {})
+                            if isinstance(source, dict):
+                                context_id = source.get("context")
+
+                            # Route to console queue
+                            if context_id:
+                                console_queue = self.get_console_queue_for_context(context_id)
+                                console_queue.put(response)
+                            else:
+                                # Log event without context - route to all contexts with console logging enabled
+                                with self.console_contexts_lock:
+                                    for ctx in self.console_enabled_contexts:
+                                        console_queue = self.get_console_queue_for_context(ctx)
+                                        console_queue.put(response)
+                        else:
+                            # For other events, context is directly in params
+                            if "context" in params:
+                                context_id = params["context"]
+
+                            if context_id:
+                                event_queue = self.get_event_queue_for_context(context_id)
+                                event_queue.put(response)
+                        # Continue waiting for our response
                         continue
 
                     # If this is a response for a different message, we might want to handle it
@@ -605,12 +643,19 @@ user_pref("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", false);
                 self.event_queues[context_id] = queue.Queue()
             return self.event_queues[context_id]
 
+    def get_console_queue_for_context(self, context_id: str) -> queue.Queue:
+        """Get or create the console event queue for a specific browsing context."""
+        with self.console_queues_lock:
+            if context_id not in self.console_queues:
+                self.console_queues[context_id] = queue.Queue()
+            return self.console_queues[context_id]
+
     def poll_for_events(self, timeout: float = 0.1) -> int:
         """
         Poll WebSocket for events without sending a message (thread-safe).
 
         This reads from the WebSocket and distributes events to per-tab queues.
-        Useful for capturing async events like network.responseCompleted.
+        Useful for capturing async events like network.responseCompleted and log.entryAdded.
 
         Args:
             timeout: How long to wait for events (seconds)
@@ -638,20 +683,46 @@ user_pref("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", false);
 
                         # Distribute events to the correct per-tab queue
                         if response.get("type") == "event" or response.get("method"):
+                            method = response.get("method", "")
+
                             # Extract the context from the event if available
                             context_id = None
-                            if "params" in response and "context" in response["params"]:
-                                context_id = response["params"]["context"]
+                            params = response.get("params", {})
 
-                            # If we have a context, queue it for that specific tab
-                            if context_id:
-                                event_queue = self.get_event_queue_for_context(context_id)
-                                event_queue.put(response)
-                                events_received += 1
+                            # For log.entryAdded events, context is nested in source.context
+                            if method == "log.entryAdded":
+                                source = params.get("source", {})
+                                if isinstance(source, dict):
+                                    context_id = source.get("context")
+
+                                # Route to console queue
+                                if context_id:
+                                    console_queue = self.get_console_queue_for_context(context_id)
+                                    console_queue.put(response)
+                                    events_received += 1
+                                    self.log.debug("Routed log.entryAdded to console queue for context: {}".format(context_id))
+                                else:
+                                    # Log event without context - route to all contexts with console logging enabled
+                                    with self.console_contexts_lock:
+                                        for ctx in self.console_enabled_contexts:
+                                            console_queue = self.get_console_queue_for_context(ctx)
+                                            console_queue.put(response)
+                                            events_received += 1
+                                    self.log.debug("Routed log.entryAdded to all console-enabled contexts")
                             else:
-                                # No context - this is a global event, queue for all tabs
-                                # or just log and ignore
-                                self.log.debug("Received event without context: {}".format(response.get("method")))
+                                # For other events, context is directly in params
+                                if "context" in params:
+                                    context_id = params["context"]
+
+                                # If we have a context, queue it for that specific tab
+                                if context_id:
+                                    event_queue = self.get_event_queue_for_context(context_id)
+                                    event_queue.put(response)
+                                    events_received += 1
+                                else:
+                                    # No context - this is a global event, queue for all tabs
+                                    # or just log and ignore
+                                    self.log.debug("Received event without context: {}".format(method))
                         elif "id" in response:
                             # This is a response to a command - these aren't context-specific
                             # Put in the first available queue or handle separately

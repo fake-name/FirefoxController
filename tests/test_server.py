@@ -46,6 +46,10 @@ class TestHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.path = "test_dom.html"
         elif parsed_url.path == "/form":
             self.path = "test_form.html"
+        elif parsed_url.path == "/console":
+            self.path = "test_console.html"
+        elif parsed_url.path == "/console-error":
+            self.path = "test_console_error.html"
         elif parsed_url.path == "/async-fetch":
             self.path = "test_async_fetch.html"
         elif parsed_url.path == "/async-xhr":
@@ -374,7 +378,10 @@ class TestServer:
         """Start the test server in a background thread"""
         if self.server is not None:
             return
-        
+
+        # Ensure test HTML files exist
+        create_test_html_files()
+
         # Try to create server, handle port conflicts
         try:
             self.server = socketserver.TCPServer(("localhost", self.port), TestHTTPRequestHandler)
@@ -546,6 +553,75 @@ def create_test_html_files():
     <p>This page is for testing cookie functionality.</p>
     <a href="/set-cookie">Set Test Cookie</a> |
     <a href="/check-cookie">Check Cookies</a>
+</body>
+</html>""",
+
+        "test_console.html": """<html>
+<head>
+    <title>Console Test Page</title>
+    <script>
+        // Generate various console messages on page load
+        window.addEventListener('load', function() {
+            console.log('Page loaded - console.log message');
+            console.info('Info message from console.info');
+            console.debug('Debug message from console.debug');
+            console.warn('Warning message from console.warn');
+            console.error('Error message from console.error');
+
+            // Log with multiple arguments
+            console.log('Multiple', 'arguments', 'test', 123);
+
+            // Log an object
+            console.log('Object test:', {key: 'value', nested: {a: 1}});
+        });
+
+        // Function to trigger more console messages
+        function triggerConsoleMessages() {
+            console.log('Triggered console.log');
+            console.warn('Triggered console.warn');
+            console.error('Triggered console.error');
+        }
+    </script>
+</head>
+<body>
+    <h1>Console Test Page</h1>
+    <p>This page generates console messages on load.</p>
+    <button id="trigger-btn" onclick="triggerConsoleMessages()">Trigger More Messages</button>
+</body>
+</html>""",
+
+        "test_console_error.html": """<html>
+<head>
+    <title>JavaScript Error Test Page</title>
+    <script>
+        // Trigger a JavaScript error after page load
+        window.addEventListener('load', function() {
+            console.log('Page loaded, about to cause errors...');
+
+            // Throw an uncaught error after a delay
+            setTimeout(function() {
+                // Reference an undefined variable - this will cause a JavaScript error
+                undefinedVariable.method();
+            }, 500);
+        });
+
+        // Function to trigger a reference error
+        function triggerReferenceError() {
+            nonExistentFunction();
+        }
+
+        // Function to trigger a type error
+        function triggerTypeError() {
+            var x = null;
+            x.someMethod();
+        }
+    </script>
+</head>
+<body>
+    <h1>JavaScript Error Test Page</h1>
+    <p>This page triggers JavaScript errors to test error capture.</p>
+    <button id="ref-error-btn" onclick="triggerReferenceError()">Trigger ReferenceError</button>
+    <button id="type-error-btn" onclick="triggerTypeError()">Trigger TypeError</button>
 </body>
 </html>""",
 
