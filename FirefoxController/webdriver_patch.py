@@ -18,45 +18,68 @@ import os
 import sys
 import shutil
 
+IS_WINDOWS = sys.platform == 'win32'
+IS_LINUX = sys.platform.startswith('linux')
+
 
 class WebDriverPatchError(Exception):
     """Exception raised when WebDriver patching fails."""
     pass
 
 
+def _get_xul_library_name():
+    """Get the platform-specific name of the XUL library."""
+    if IS_WINDOWS:
+        return "xul.dll"
+    elif IS_LINUX:
+        return "libxul.so"
+    else:
+        raise WebDriverPatchError("Unsupported platform: {}".format(sys.platform))
+
+
 def find_firefox_libxul():
     """
-    Find the libxul.so file for Firefox.
+    Find the XUL library file for Firefox (libxul.so on Linux, xul.dll on Windows).
 
     Returns:
-        Path to libxul.so or None if not found
+        Path to the XUL library or None if not found
     """
+    xul_name = _get_xul_library_name()
+
     # Find Firefox binary
-    firefox_binary = shutil.which("firefox")
-    if not firefox_binary:
-        return None
+    firefox_binary = shutil.which("firefox") or shutil.which("firefox.exe")
+    if firefox_binary:
+        # Resolve symlinks to get the real Firefox installation directory
+        firefox_real = os.path.realpath(firefox_binary)
+        firefox_dir = os.path.dirname(firefox_real)
 
-    # Resolve symlinks to get the real Firefox installation directory
-    firefox_real = os.path.realpath(firefox_binary)
-    firefox_dir = os.path.dirname(firefox_real)
+        xul_path = os.path.join(firefox_dir, xul_name)
+        if os.path.exists(xul_path):
+            return xul_path
 
-    # libxul.so is typically in the same directory as the firefox binary
-    libxul_path = os.path.join(firefox_dir, "libxul.so")
-    if os.path.exists(libxul_path):
-        return libxul_path
-
-    # Also check common locations
-    common_paths = [
-        "/usr/lib/firefox/libxul.so",
-        "/usr/lib64/firefox/libxul.so",
-        "/usr/lib/firefox-esr/libxul.so",
-        "/opt/firefox/libxul.so",
-        "/snap/firefox/current/usr/lib/firefox/libxul.so",
-    ]
-
-    for path in common_paths:
-        if os.path.exists(path):
-            return path
+    if IS_WINDOWS:
+        # Check common Windows install locations
+        windows_paths = [
+            os.path.join(os.environ.get("PROGRAMFILES", r"C:\Program Files"), "Mozilla Firefox", xul_name),
+            os.path.join(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"), "Mozilla Firefox", xul_name),
+        ]
+        for path in windows_paths:
+            if os.path.exists(path):
+                return path
+    elif IS_LINUX:
+        # Check common Linux locations
+        linux_paths = [
+            "/usr/lib/firefox/libxul.so",
+            "/usr/lib64/firefox/libxul.so",
+            "/usr/lib/firefox-esr/libxul.so",
+            "/opt/firefox/libxul.so",
+            "/snap/firefox/current/usr/lib/firefox/libxul.so",
+        ]
+        for path in linux_paths:
+            if os.path.exists(path):
+                return path
+    else:
+        raise WebDriverPatchError("Unsupported platform: {}".format(sys.platform))
 
     return None
 

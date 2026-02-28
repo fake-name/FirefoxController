@@ -12,7 +12,6 @@ import subprocess
 import time
 import uuid
 import websocket
-import distutils.spawn
 import tempfile
 import os
 import os.path
@@ -22,9 +21,13 @@ import queue
 import threading
 import urllib.request
 import signal
+import sys
 import re
 from typing import Optional, Dict, Any, List, Union
 from urllib.parse import urlparse
+
+IS_WINDOWS = sys.platform == 'win32'
+IS_LINUX = sys.platform.startswith('linux')
 
 try:
     from websockets.sync.client import connect
@@ -382,23 +385,55 @@ user_pref("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", false);
 
         return profile_path
     
+    def _find_firefox_binary(self) -> str:
+        """
+        Find the Firefox binary, checking platform-specific locations.
+
+        Returns:
+            Path to the Firefox binary
+
+        Raises:
+            FirefoxStartupException: If Firefox binary is not found
+        """
+        # First check if the configured binary is directly usable
+        found = shutil.which(self.binary)
+        if found:
+            return found
+
+        # Platform-specific fallback search
+        if IS_WINDOWS:
+            windows_paths = [
+                os.path.join(os.environ.get("PROGRAMFILES", r"C:\Program Files"), "Mozilla Firefox", "firefox.exe"),
+                os.path.join(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"), "Mozilla Firefox", "firefox.exe"),
+                os.path.join(os.environ.get("LOCALAPPDATA", ""), "Mozilla Firefox", "firefox.exe"),
+            ]
+            for path in windows_paths:
+                if os.path.isfile(path):
+                    return path
+        elif IS_LINUX:
+            # On Linux, shutil.which should have found it if it's in PATH
+            pass
+        else:
+            raise FirefoxStartupException("Unsupported platform: {}".format(sys.platform))
+
+        raise FirefoxStartupException("Firefox binary not found: {}".format(self.binary))
+
     def start_firefox(self):
-        """Start Firefox with Marionette enabled"""
-        if not distutils.spawn.find_executable(self.binary):
-            raise FirefoxStartupException("Firefox binary not found: {}".format(self.binary))
-        
+        """Start Firefox with remote debugging enabled"""
+        firefox_path = self._find_firefox_binary()
+
         # Create profile if needed
         profile_path = self._create_profile()
-        
+
         # Build command line
-        cmd = [self.binary]
-        
+        cmd = [firefox_path]
+
         if self.headless:
             cmd.extend(["--headless"])
-            
+
         # Use the profile
         cmd.extend(["--profile", profile_path])
-        
+
         # Enable WebDriver BiDi (the modern standard)
         cmd.extend([
             "--remote-allow-system-access",
@@ -406,86 +441,116 @@ user_pref("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", false);
             "--remote-allow-hosts", "localhost,127.0.0.1",  # Allow local connections
             "--remote-allow-origins", "http://localhost,http://127.0.0.1",  # Allow local origins
         ])
-        
+
         # Add additional options
         cmd.extend(self.additional_options)
-        
+
         self.log.info("Starting Firefox with command: {}".format(' '.join(cmd)))
         self.log.info("Using profile: {}".format(profile_path))
-        
+
         try:
-            self.process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                preexec_fn=self._set_pdeathsig
-            )
-            
+            popen_kwargs = {
+                'stdout': subprocess.PIPE,
+                'stderr': subprocess.PIPE,
+            }
+
+            if IS_WINDOWS:
+                # On Windows, use CREATE_NEW_PROCESS_GROUP so we can terminate cleanly
+                popen_kwargs['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
+            elif IS_LINUX:
+                # On Linux, use preexec_fn to kill child when parent dies
+                popen_kwargs['preexec_fn'] = self._set_pdeathsig
+            else:
+                raise FirefoxStartupException("Unsupported platform: {}".format(sys.platform))
+
+            self.process = subprocess.Popen(cmd, **popen_kwargs)
+
             # Give Firefox more time to start
             time.sleep(4)
-            
+
             # Check if process is still running
             if self.process.poll() is not None:
                 stderr = self.process.stderr.read().decode('utf-8') if self.process.stderr else ""
                 raise FirefoxStartupException("Firefox failed to start: {}".format(stderr))
-                
+
+        except FirefoxStartupException:
+            raise
         except Exception as e:
             raise FirefoxStartupException("Failed to start Firefox: {}".format(e))
     
     def _set_pdeathsig(self):
-        """Set parent death signal to ensure Firefox dies when parent dies"""
-        import signal
-        import os
+        """Set parent death signal to ensure Firefox dies when parent dies (Linux only).
+
+        This is only called as a preexec_fn on Linux, never on Windows.
+        """
         try:
-            # Set the child process to be killed when parent dies
-            if hasattr(signal, 'SIGTERM'):
-                import ctypes
-                libc = ctypes.CDLL("libc.so.6")
-                libc.prctl(1, signal.SIGTERM)
-        except:
+            import ctypes
+            PR_SET_PDEATHSIG = 1
+            libc = ctypes.CDLL("libc.so.6")
+            libc.prctl(PR_SET_PDEATHSIG, signal.SIGTERM)
+        except Exception:
             pass  # Not critical if this fails
     
     def connect(self):
         """Connect to Firefox remote debugging interface using WebDriver BiDi"""
         if not self.process or self.process.poll() is not None:
             raise FirefoxConnectFailure("Firefox process is not running")
-        
+
         if not WEBSOCKETS_AVAILABLE:
             raise FirefoxConnectFailure("websockets library not available. Please install with: pip install websockets")
-        
-        try:
-            # Give Firefox more time to start
-            time.sleep(3)
-            
-            # WebDriver BiDi uses a session-based WebSocket URL (based on working implementation)
-            ws_url = "ws://127.0.0.1:{}/session".format(self.port)
-            
-            self.log.info("Connecting to WebDriver BiDi WebSocket: {}".format(ws_url))
-            
-            # Connect using websockets.sync.client (more reliable)
-            self.ws_connection = connect(ws_url)
-            
-            # Initialize the WebDriver BiDi connection
-            self._initialize_bidi_connection()
-            
-        except Exception as e:
-            raise FirefoxConnectFailure("Connection failed: {}".format(e))
+
+        # WebDriver BiDi uses a session-based WebSocket URL
+        ws_url = "ws://127.0.0.1:{}/session".format(self.port)
+
+        # Retry connection - Firefox may take varying time to start across platforms
+        max_retries = 10
+        retry_delay = 1.0
+        last_error = None
+
+        for attempt in range(max_retries):
+            # Check that Firefox is still alive before each attempt
+            if self.process.poll() is not None:
+                stderr = self.process.stderr.read().decode('utf-8') if self.process.stderr else ""
+                raise FirefoxConnectFailure("Firefox process died during connection. stderr: {}".format(stderr))
+
+            try:
+                self.log.info("Connecting to WebDriver BiDi WebSocket (attempt {}/{}): {}".format(
+                    attempt + 1, max_retries, ws_url))
+
+                self.ws_connection = connect(ws_url)
+
+                # Initialize the WebDriver BiDi connection
+                self._initialize_bidi_connection()
+                return  # Success
+
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    self.log.debug("Connection attempt {} failed: {}. Retrying in {}s...".format(
+                        attempt + 1, e, retry_delay))
+                    time.sleep(retry_delay)
+                else:
+                    self.log.error("All {} connection attempts failed".format(max_retries))
+
+        raise FirefoxConnectFailure("Connection failed after {} attempts. Last error: {}".format(
+            max_retries, last_error))
     
     def _initialize_bidi_connection(self):
         """Initialize WebDriver BiDi connection (based on working implementation)"""
         try:
-            # Initiate the session (based on working implementation)
-            session_id = self._send_message({
+            # Initiate the session
+            session_response = self._send_message({
                 'method': 'session.new',
                 'params': {
                     'capabilities': {}
                 }
-            })['result']['sessionId']
-            
+            })
+            session_id = session_response['result']['sessionId']
+
             self.session_id = session_id
             self.root_actor = "bidi"
             self.log.info("Connected to WebDriver BiDi session: {}".format(session_id))
-            
+
             # Subscribe to browser events
             self._send_message({
                 'method': 'session.subscribe',
@@ -495,41 +560,65 @@ user_pref("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", false);
                     ]
                 }
             })
-            
+
             # Use default user context instead of creating a new one
             # This allows cookies to persist across browser restarts
-            # (creating a new user context each time would isolate cookies)
-            user_context = 'default'
-
-            self.user_context = user_context
+            self.user_context = 'default'
 
             # Create browsing context and handle the event response
             create_response = self._send_message({
                 'method': 'browsingContext.create',
                 'params': {
                     'type': 'tab'
-                    # Don't specify userContext to use the default context
                 }
             })
-            
-            # The response might be an event or a result
-            if create_response.get('type') == 'event' and create_response.get('method') == 'browsingContext.domContentLoaded':
-                self.browsing_context = create_response['params']['context']
-            elif create_response.get('type') == 'success' and 'result' in create_response and 'context' in create_response['result']:
-                self.browsing_context = create_response['result']['context']
-            else:
-                # If we get an event but not the right one, listen for the correct event
-                event = self._receive_event('browsingContext.domContentLoaded', {}, timeout=5)
+
+            self.log.debug("browsingContext.create response: {}".format(create_response))
+
+            # Extract context ID from response - try multiple response formats
+            context_id = None
+
+            # Format 1: success response with result.context
+            if create_response.get('type') == 'success' and 'result' in create_response:
+                context_id = create_response['result'].get('context')
+
+            # Format 2: domContentLoaded event (sometimes arrives instead of direct response)
+            if not context_id and create_response.get('type') == 'event':
+                if create_response.get('method') == 'browsingContext.domContentLoaded':
+                    context_id = create_response.get('params', {}).get('context')
+
+            # Format 3: wait for domContentLoaded event if we haven't got context yet
+            if not context_id:
+                self.log.debug("Context not found in create response, waiting for domContentLoaded event...")
+                event = self._receive_event('browsingContext.domContentLoaded', {}, timeout=10)
                 if event:
-                    self.browsing_context = event['params']['context']
-                else:
-                    raise FirefoxCommunicationsError("Failed to create browsing context")
-            
+                    context_id = event.get('params', {}).get('context')
+
+            # Format 4: fall back to getTree to discover existing contexts
+            if not context_id:
+                self.log.debug("Still no context, querying browsingContext.getTree...")
+                tree_response = self._send_message({
+                    'method': 'browsingContext.getTree',
+                    'params': {'maxDepth': 0}
+                })
+                contexts = tree_response.get('result', {}).get('contexts', [])
+                if contexts:
+                    context_id = contexts[0].get('context')
+                    self.log.debug("Found context from getTree: {}".format(context_id))
+
+            if not context_id:
+                raise FirefoxCommunicationsError(
+                    "Failed to create browsing context. "
+                    "create response: {}".format(create_response))
+
+            self.browsing_context = context_id
             self.log.info("Created browsing context: {}".format(self.browsing_context))
-            
+
             # Get the list of browsing contexts (tabs/windows)
             self._list_browsing_contexts()
-            
+
+        except FirefoxCommunicationsError:
+            raise
         except Exception as e:
             self.log.warning("WebDriver BiDi initialization failed: {}".format(e))
             raise FirefoxCommunicationsError("Failed to initialize WebDriver BiDi connection: {}".format(e))
@@ -1110,13 +1199,13 @@ user_pref("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", false);
             self.log.error("Failed to close all tabs: {}".format(e))
             return False
     
-    def close(self, sigint_timeout=20, sigkill_timeout=30):
+    def close(self, graceful_timeout=20, kill_timeout=30):
         """
         Close connection and stop Firefox with graceful shutdown escalation.
 
         Args:
-            sigint_timeout: Seconds to wait after SIGINT before escalating (default: 20)
-            sigkill_timeout: Seconds to wait after SIGKILL before giving up (default: 30)
+            graceful_timeout: Seconds to wait after graceful termination before escalating (default: 20)
+            kill_timeout: Seconds to wait after forceful kill before giving up (default: 30)
         """
         # Step 1: End WebSocket session properly
         try:
@@ -1127,10 +1216,10 @@ user_pref("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", false);
                         'method': 'session.end',
                         'params': {},
                     })
-                except:
+                except Exception:
                     pass
                 self.ws_connection.close()
-        except:
+        except Exception:
             pass
 
         # Step 2: Gracefully shutdown Firefox process
@@ -1138,47 +1227,79 @@ user_pref("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", false);
             pid = self.process.pid
             self.log.info("Shutting down Firefox process (PID: {})".format(pid))
 
-            # Try SIGINT (Ctrl+C) first for graceful shutdown
-            try:
-                self.log.info("Sending SIGINT to Firefox process...")
-                os.kill(pid, signal.SIGINT)
-
-                # Wait for process to terminate gracefully
+            if IS_WINDOWS:
+                # On Windows, use process.terminate() (calls TerminateProcess)
+                # There is no graceful SIGINT equivalent that works reliably
                 try:
-                    self.process.wait(timeout=sigint_timeout)
-                    self.log.info("Firefox terminated gracefully after SIGINT")
-                except subprocess.TimeoutExpired:
-                    # Process didn't terminate, escalate to SIGKILL
-                    self.log.warning("Firefox did not respond to SIGINT after {} seconds, escalating to SIGKILL...".format(sigint_timeout))
-
+                    self.log.info("Terminating Firefox process...")
+                    self.process.terminate()
                     try:
-                        os.kill(pid, signal.SIGKILL)
-                        self.log.info("Sent SIGKILL to Firefox process")
-
-                        # Wait for process to die after SIGKILL
+                        self.process.wait(timeout=graceful_timeout)
+                        self.log.info("Firefox terminated gracefully")
+                    except subprocess.TimeoutExpired:
+                        self.log.warning("Firefox did not respond to terminate after {} seconds, killing...".format(graceful_timeout))
                         try:
-                            self.process.wait(timeout=sigkill_timeout)
-                            self.log.info("Firefox killed with SIGKILL")
+                            self.process.kill()
+                            self.process.wait(timeout=kill_timeout)
+                            self.log.info("Firefox killed forcefully")
                         except subprocess.TimeoutExpired:
-                            self.log.error("Firefox did not terminate even after SIGKILL (waited {} seconds)".format(sigkill_timeout))
+                            self.log.error("Firefox did not terminate even after kill (waited {} seconds)".format(kill_timeout))
+                        except Exception as e:
+                            self.log.error("Error killing Firefox: {}".format(e))
+                except Exception as e:
+                    self.log.error("Error during Firefox shutdown: {}".format(e))
+            elif IS_LINUX:
+                # On Linux, try SIGINT first for graceful shutdown
+                try:
+                    self.log.info("Sending SIGINT to Firefox process...")
+                    os.kill(pid, signal.SIGINT)
 
-                    except ProcessLookupError:
-                        self.log.info("Firefox process already terminated")
-                    except Exception as e:
-                        self.log.error("Error sending SIGKILL: {}".format(e))
+                    # Wait for process to terminate gracefully
+                    try:
+                        self.process.wait(timeout=graceful_timeout)
+                        self.log.info("Firefox terminated gracefully after SIGINT")
+                    except subprocess.TimeoutExpired:
+                        # Process didn't terminate, escalate to SIGKILL
+                        self.log.warning("Firefox did not respond to SIGINT after {} seconds, escalating to SIGKILL...".format(graceful_timeout))
 
-            except ProcessLookupError:
-                self.log.info("Firefox process already terminated")
-            except Exception as e:
-                self.log.error("Error during Firefox shutdown: {}".format(e))
-                # Try the old method as fallback
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                            self.log.info("Sent SIGKILL to Firefox process")
+
+                            # Wait for process to die after SIGKILL
+                            try:
+                                self.process.wait(timeout=kill_timeout)
+                                self.log.info("Firefox killed with SIGKILL")
+                            except subprocess.TimeoutExpired:
+                                self.log.error("Firefox did not terminate even after SIGKILL (waited {} seconds)".format(kill_timeout))
+
+                        except ProcessLookupError:
+                            self.log.info("Firefox process already terminated")
+                        except Exception as e:
+                            self.log.error("Error sending SIGKILL: {}".format(e))
+
+                except ProcessLookupError:
+                    self.log.info("Firefox process already terminated")
+                except Exception as e:
+                    self.log.error("Error during Firefox shutdown: {}".format(e))
+                    # Try the old method as fallback
+                    try:
+                        self.process.terminate()
+                        self.process.wait(timeout=5)
+                    except Exception:
+                        try:
+                            self.process.kill()
+                        except Exception:
+                            pass
+            else:
+                self.log.error("Unsupported platform: {}".format(sys.platform))
                 try:
                     self.process.terminate()
                     self.process.wait(timeout=5)
-                except:
+                except Exception:
                     try:
                         self.process.kill()
-                    except:
+                    except Exception:
                         pass
 
         # Clean up temporary profile
@@ -1186,7 +1307,7 @@ user_pref("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", false);
             if self.temp_profile and os.path.exists(self.temp_profile):
                 shutil.rmtree(self.temp_profile)
                 self.log.debug("Cleaned up temporary profile: {}".format(self.temp_profile))
-        except:
+        except Exception:
             pass
 
         # Clear all state
@@ -1201,7 +1322,13 @@ user_pref("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", false);
     def __enter__(self):
         """Context manager entry"""
         self.start_firefox()
-        self.connect()
+        try:
+            self.connect()
+        except Exception:
+            # If connect fails, Firefox is running but we'll never enter
+            # the with-block, so __exit__ won't be called. Clean up now.
+            self.close()
+            raise
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):

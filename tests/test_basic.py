@@ -198,38 +198,44 @@ def test_tab_management():
 
 def test_custom_profile():
     """Test using custom profile directory"""
-    
+
     logger = logging.getLogger("FirefoxController")
-    
+
     # Start test server
     test_server = TestServer()
     test_server.start()
-    
+
+    temp_profile_dir = tempfile.mkdtemp()
     try:
         logger.info("Starting custom profile test...")
-        
-        # Create a temporary profile directory
-        with tempfile.TemporaryDirectory() as temp_profile_dir:
-            logger.info("Using temporary profile: {}".format(temp_profile_dir))
-            
-            with FirefoxController.FirefoxRemoteDebugInterface(
-                headless=False,
-                profile_dir=temp_profile_dir,
-                additional_options=["--width=800", "--height=600"]
-            ) as firefox:
-                
-                # Test basic functionality with custom profile
-                tabs = firefox.manager.list_tabs()
-                logger.info(" Found {} tabs with custom profile".format(len(tabs)))
-                
-                # Test navigation
-                source = firefox.blocking_navigate_and_get_source(test_server.get_url("/simple"), timeout=15)
-                logger.info(" Successfully navigated with custom profile ({} chars)".format(len(source)))
-                
-                logger.info("Custom profile test completed successfully")
-    
+        logger.info("Using temporary profile: {}".format(temp_profile_dir))
+
+        with FirefoxController.FirefoxRemoteDebugInterface(
+            headless=False,
+            profile_dir=temp_profile_dir,
+            additional_options=["--width=800", "--height=600"]
+        ) as firefox:
+
+            # Test basic functionality with custom profile
+            tabs = firefox.manager.list_tabs()
+            logger.info(" Found {} tabs with custom profile".format(len(tabs)))
+
+            # Test navigation
+            source = firefox.blocking_navigate_and_get_source(test_server.get_url("/simple"), timeout=15)
+            logger.info(" Successfully navigated with custom profile ({} chars)".format(len(source)))
+
+            logger.info("Custom profile test completed successfully")
+
     finally:
         test_server.stop()
+        # On Windows, Firefox may still hold file locks briefly after termination.
+        # Give it a moment, then try cleanup (tolerate failure).
+        time.sleep(1)
+        try:
+            import shutil
+            shutil.rmtree(temp_profile_dir, ignore_errors=True)
+        except Exception:
+            pass
 
 def test_error_handling():
     """Test error handling and edge cases"""
