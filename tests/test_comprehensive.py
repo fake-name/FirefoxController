@@ -141,6 +141,39 @@ def test_custom_profile():
     finally:
         test_server.stop()
 
+def test_construction_without_context_manager():
+    """Test that FirefoxRemoteDebugInterface works without a 'with' block.
+
+    Previously, Firefox was only launched inside __enter__, so constructing
+    the object directly left browsing_context=None and no visible window.
+    """
+    test_server = TestServer()
+    test_server.start()
+
+    try:
+        cr = FirefoxController.FirefoxRemoteDebugInterface(
+            headless=False,
+            additional_options=["--width=800", "--height=600"]
+        )
+
+        # Firefox should already be running and connected
+        assert cr.manager.browsing_context is not None, \
+            "browsing_context should be set after construction"
+        assert cr.manager.process is not None, \
+            "Firefox process should be running"
+        assert cr.manager.process.poll() is None, \
+            "Firefox process should not have exited"
+
+        # Basic operation should work
+        source = cr.blocking_navigate_and_get_source(
+            test_server.get_url("/simple"), timeout=15)
+        assert source is not None and len(source) > 0
+
+        cr.manager.close()
+    finally:
+        test_server.stop()
+
+
 if __name__ == "__main__":
     # Run pytest when this file is executed directly
     import pytest

@@ -59,7 +59,7 @@ class FirefoxExecutionManager:
     def __init__(self,
                  binary: str = "firefox",
                  host: str = "localhost",
-                 port: Optional[int] = 9222,
+                 port: Optional[int] = None,
                  websocket_timeout: int = 10,
                  headless: bool = False,
                  additional_options: List[str] = None,
@@ -70,7 +70,7 @@ class FirefoxExecutionManager:
         Args:
             binary: Path to Firefox binary
             host: Host to connect to
-            port: Debug port to use (9222 default, None for automatic selection)
+            port: Debug port to use (None for automatic selection, or specify e.g. 9222)
             websocket_timeout: WebSocket timeout in seconds
             headless: Run Firefox in headless mode
             additional_options: Additional command line options for Firefox
@@ -672,6 +672,21 @@ user_pref("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", false);
 
             except Exception as e:
                 last_error = e
+
+                # If a stale session is blocking us, try to end it
+                if "Maximum number of active sessions" in str(e) and self.ws_connection:
+                    self.log.warning("Stale BiDi session detected, sending session.end...")
+                    try:
+                        self._send_message({'method': 'session.end', 'params': {}})
+                        self.log.info("Stale session ended successfully")
+                    except Exception as end_err:
+                        self.log.debug("session.end failed (expected): {}".format(end_err))
+                    try:
+                        self.ws_connection.close()
+                    except Exception:
+                        pass
+                    self.ws_connection = None
+
                 if attempt < max_retries - 1:
                     self.log.debug("Connection attempt {} failed: {}. Retrying in {}s...".format(
                         attempt + 1, e, retry_delay))
@@ -1109,18 +1124,8 @@ user_pref("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", false);
         """
         from .interface import FirefoxRemoteDebugInterface
         
-        # Create a new interface instance
-        interface = FirefoxRemoteDebugInterface(
-            binary=self.binary,
-            host=self.host,
-            port=self.port,
-            headless=self.headless,
-            additional_options=self.additional_options,
-            profile_dir=self.profile_dir
-        )
-
-        # Configure the interface for this specific context
-        interface.manager = self  # Share the same execution manager
+        # Create a new interface instance sharing this manager (no new Firefox)
+        interface = FirefoxRemoteDebugInterface(manager=self)
         interface.active_browsing_context = context_id
 
         # Note: Don't update self.browsing_context here - it belongs to the default tab

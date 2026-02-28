@@ -31,18 +31,18 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
     def __init__(self,
                  binary: str = "firefox",
                  host: str = "localhost",
-                 port: Optional[int] = 9222,
+                 port: Optional[int] = None,
                  headless: bool = False,
                  additional_options: List[str] = None,
                  profile_dir: str = None,
                  manager: Optional['FirefoxExecutionManager'] = None):
         """
         Initialize Firefox remote debug interface.
-        
+
         Args:
             binary: Path to Firefox binary
             host: Host to connect to
-            port: Debug port to use (9222 default, None for automatic selection)
+            port: Debug port to use (None for automatic selection, or specify e.g. 9222)
             headless: Run Firefox in headless mode
             additional_options: Additional command line options
             profile_dir: Custom profile directory (None for temporary profile)
@@ -61,7 +61,7 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
                 additional_options=additional_options,
                 profile_dir=profile_dir
             )
-        
+
         self.log = logging.getLogger("FirefoxController.RemoteDebugInterface")
 
         # This interface is associated with a specific browsing context
@@ -79,10 +79,22 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
 
         # Default timeout for operations (can be changed with set_default_timeout())
         self.default_timeout = 30
-    
+
+        # Auto-launch Firefox so the interface works with or without `with`
+        self._launched_by_init = False
+        if not manager:
+            self.manager.start_firefox()
+            try:
+                self.manager.connect()
+            except Exception:
+                self.manager.close()
+                raise
+            self._launched_by_init = True
+
     def __enter__(self):
-        """Context manager entry"""
-        self.manager.__enter__()
+        """Context manager entry — launch already happened in __init__"""
+        if not self._launched_by_init:
+            self.manager.__enter__()
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
