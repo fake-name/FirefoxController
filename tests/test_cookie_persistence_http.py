@@ -103,9 +103,11 @@ def test_http_cookies_persist_across_restarts():
         test_server.stop()
 
         # Remove temporary profile directory
+        # On Windows, Firefox may still hold file locks briefly after termination.
+        import time
+        time.sleep(1)
         if os.path.exists(temp_profile_dir):
-            shutil.rmtree(temp_profile_dir)
-            logger.info("Cleaned up temporary profile: {}".format(temp_profile_dir))
+            shutil.rmtree(temp_profile_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

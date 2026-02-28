@@ -10,8 +10,38 @@ import socketserver
 import threading
 import os
 import json
+import hashlib
+import struct
 from urllib.parse import urlparse, parse_qs
 import time
+
+
+def _generate_random_bytes(seed: int, offset: int, length: int) -> bytes:
+    """Generate deterministic but incompressible bytes using SHA-512.
+
+    Divides the byte stream into 64-byte blocks (SHA-512 digest size).
+    Each block is SHA-512(seed || block_index), so any range can be
+    generated independently without producing the preceding bytes.
+    """
+    BLOCK_SIZE = 64  # SHA-512 digest length
+    result = bytearray()
+
+    first_block = offset // BLOCK_SIZE
+    block_offset = offset % BLOCK_SIZE
+    blocks_needed = (block_offset + length + BLOCK_SIZE - 1) // BLOCK_SIZE
+
+    seed_bytes = struct.pack('<Q', seed)  # 8-byte little-endian seed
+
+    for i in range(blocks_needed):
+        block_index = first_block + i
+        h = hashlib.sha512(seed_bytes + struct.pack('<Q', block_index))
+        block = h.digest()
+
+        if i == 0 and block_offset > 0:
+            block = block[block_offset:]
+        result.extend(block)
+
+    return bytes(result[:length])
 
 class TestHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
     """Custom request handler for test pages"""
@@ -301,11 +331,57 @@ class TestHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             event.wait(timeout=120)  # Wait max 120s or until shutdown
             return
 
+        elif parsed_url.path == "/download/sized.bin":
+            # Serve a configurable-size file with deterministic random data
+            params = parse_qs(parsed_url.query)
+            file_size = int(params.get('size', ['1048576'])[0])  # default 1MB
+            seed = int(params.get('seed', ['42'])[0])
+            range_header = self.headers.get('Range')
+            WRITE_BLOCK = 1024 * 1024  # 1MB write blocks
+
+            if range_header:
+                range_match = range_header.replace('bytes=', '').split('-')
+                start = int(range_match[0])
+                end = int(range_match[1]) if range_match[1] else file_size - 1
+
+                self.send_response(206)
+                self.send_header("Content-type", "application/octet-stream")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Content-Range", "bytes {}-{}/{}".format(start, end, file_size))
+                self.send_header("Content-Length", str(end - start + 1))
+                self.end_headers()
+
+                if not is_head:
+                    remaining = end - start + 1
+                    pos = start
+                    while remaining > 0:
+                        block_len = min(WRITE_BLOCK, remaining)
+                        self.wfile.write(_generate_random_bytes(seed, pos, block_len))
+                        pos += block_len
+                        remaining -= block_len
+            else:
+                self.send_response(200)
+                self.send_header("Content-type", "application/octet-stream")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Content-Length", str(file_size))
+                self.end_headers()
+
+                if not is_head:
+                    remaining = file_size
+                    pos = 0
+                    while remaining > 0:
+                        block_len = min(WRITE_BLOCK, remaining)
+                        self.wfile.write(_generate_random_bytes(seed, pos, block_len))
+                        pos += block_len
+                        remaining -= block_len
+            return
+
         elif parsed_url.path == "/download/large.bin":
             # Serve a large file (5MB) to test chunking
             file_size = 5 * 1024 * 1024  # 5MB
             range_header = self.headers.get('Range')
-            print(f"[DEBUG] Large file request - Range header: {range_header}, All headers: {dict(self.headers)}")
+            WRITE_BLOCK = 1024 * 1024  # 1MB write blocks
 
             if range_header:
                 # Parse Range header: bytes=start-end
@@ -320,11 +396,15 @@ class TestHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_header("Content-Length", str(end - start + 1))
                 self.end_headers()
 
-                # Send the requested chunk (repeating pattern for testing)
+                # Send the requested chunk (repeating pattern) in buffered blocks
                 if not is_head:
-                    chunk_size = end - start + 1
-                    for i in range(chunk_size):
-                        self.wfile.write(bytes([(start + i) % 256]))
+                    remaining = end - start + 1
+                    pos = start
+                    while remaining > 0:
+                        block_len = min(WRITE_BLOCK, remaining)
+                        self.wfile.write(bytes([(pos + j) % 256 for j in range(block_len)]))
+                        pos += block_len
+                        remaining -= block_len
             else:
                 self.send_response(200)
                 self.send_header("Content-type", "application/octet-stream")
@@ -333,10 +413,15 @@ class TestHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_header("Content-Length", str(file_size))
                 self.end_headers()
 
-                # Send full file (repeating pattern) - skip for HEAD
+                # Send full file (repeating pattern) in buffered blocks - skip for HEAD
                 if not is_head:
-                    for i in range(file_size):
-                        self.wfile.write(bytes([i % 256]))
+                    remaining = file_size
+                    pos = 0
+                    while remaining > 0:
+                        block_len = min(WRITE_BLOCK, remaining)
+                        self.wfile.write(bytes([(pos + j) % 256 for j in range(block_len)]))
+                        pos += block_len
+                        remaining -= block_len
             return
 
         # Handle static files
@@ -364,6 +449,11 @@ class TestHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.send_response(404)
         self.end_headers()
 
+class _ReusableTCPServer(socketserver.TCPServer):
+    """TCPServer with SO_REUSEADDR so ports can be reused immediately after close."""
+    allow_reuse_address = True
+
+
 class TestServer:
     """Test server that can be started and stopped"""
 
@@ -373,7 +463,13 @@ class TestServer:
         self.server_thread = None
         self.base_url = "http://localhost:{}".format(port)
         self.shutdown_events = []  # Track events to signal on shutdown
-    
+
+    def _try_create_server(self, port):
+        """Try to create a TCP server on the given port. Returns the server or raises."""
+        server = _ReusableTCPServer(("localhost", port), TestHTTPRequestHandler)
+        server.test_server_instance = self
+        return server
+
     def start(self):
         """Start the test server in a background thread"""
         if self.server is not None:
@@ -384,42 +480,28 @@ class TestServer:
 
         # Try to create server, handle port conflicts
         try:
-            self.server = socketserver.TCPServer(("localhost", self.port), TestHTTPRequestHandler)
-            # Give request handler access to this instance for shutdown events
-            self.server.test_server_instance = self
-            
-            # Start server in background thread
-            self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-            self.server_thread.start()
-            
-            # Wait a moment for server to start
-            time.sleep(0.5)
-            
-            print("Test server started on {}".format(self.base_url))
-        except OSError as e:
-            if "Address already in use" in str(e):
-                # Try to find an available port
-                import socket
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.bind(("localhost", 0))
-                self.port = sock.getsockname()[1]
-                sock.close()
-                
-                self.base_url = "http://localhost:{}".format(self.port)
-                
-                # Create server with new port
-                self.server = socketserver.TCPServer(("localhost", self.port), TestHTTPRequestHandler)
-                # Give request handler access to this instance for shutdown events
-                self.server.test_server_instance = self
-                self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-                self.server_thread.start()
-                
-                # Wait a moment for server to start
-                time.sleep(0.5)
-                
-                print("Test server started on {} (port {} was in use)".format(self.base_url, self.port))
-            else:
-                raise
+            self.server = self._try_create_server(self.port)
+        except OSError:
+            # Port in use (EADDRINUSE on Linux, WinError 10048 on Windows)
+            # Find an available port via OS assignment
+            import socket
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.bind(("localhost", 0))
+            self.port = sock.getsockname()[1]
+            sock.close()
+
+            self.base_url = "http://localhost:{}".format(self.port)
+            self.server = self._try_create_server(self.port)
+            print("Test server started on {} (original port was in use)".format(self.base_url))
+
+        # Start server in background thread
+        self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.server_thread.start()
+
+        # Wait a moment for server to start
+        time.sleep(0.5)
+
+        print("Test server started on {}".format(self.base_url))
     
     def stop(self):
         """Stop the test server"""

@@ -1255,15 +1255,17 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
 
     def xhr_fetch(self, url: str, headers: Dict[str, str] = None,
                   post_data: str = None, post_type: str = None,
-                  use_chunks: bool = False, chunk_size: int = 512 * 1024) -> Dict[str, Any]:
+                  use_chunks: bool = False, chunk_size: int = 4 * 1024 * 1024,
+                  chunk_callback=None) -> Dict[str, Any]:
         """
         Fetch content via XMLHttpRequest without triggering Firefox's download manager.
 
         Uses FileReader.readAsDataURL() for efficient blob->base64 conversion with
         zero byte iteration. Subject to same-origin policy restrictions.
 
-        Single requests limited to ~700KB due to WebSocket 1MB frame limit.
-        For larger files, use use_chunks=True.
+        For large files, use use_chunks=True. For very large files (hundreds of MB
+        or more), pass chunk_callback to process each chunk without accumulating
+        the entire file in memory.
 
         Args:
             url: URL to fetch
@@ -1271,11 +1273,17 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
             post_data: Optional POST data
             post_type: Optional Content-Type for POST
             use_chunks: Enable chunked transfer for large files (default False)
-            chunk_size: Chunk size in bytes when use_chunks=True (default 512KB, max ~700KB)
+            chunk_size: Chunk size in bytes when use_chunks=True (default 4MB)
+            chunk_callback: Callable(data: bytes, offset: int) invoked for each
+                            chunk. When provided, chunks are NOT accumulated in
+                            memory — the returned dict has 'size' instead of
+                            'content'/'response'.
 
         Returns:
             Dict with keys: url, headers, resp_headers, post, response (text),
-            content (bytes), mimetype, code
+            content (bytes), mimetype, code.
+            When chunk_callback is provided: content/response keys are omitted,
+            'size' and 'chunks' are included instead.
         """
         # Only use chunking if explicitly requested and not a POST
         if use_chunks and not post_data:
@@ -1286,7 +1294,7 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
                 # Use chunked transfer for files larger than chunk_size
                 if content_length > chunk_size:
                     self.log.info("Large file detected ({} bytes), using chunked transfer".format(content_length))
-                    return self._xhr_fetch_chunked(url, headers, content_length, chunk_size)
+                    return self._xhr_fetch_chunked(url, headers, content_length, chunk_size, chunk_callback)
                 elif content_length > 0:
                     self.log.debug("File size {} is below chunk threshold, using single request".format(content_length))
             except Exception as e:
@@ -1334,14 +1342,22 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
             return {'content_length': 0, 'code': 0}
 
     def _xhr_fetch_chunked(self, url: str, headers: Dict[str, str],
-                          content_length: int, chunk_size: int) -> Dict[str, Any]:
-        """Fetch large file in chunks using Range requests"""
+                          content_length: int, chunk_size: int,
+                          chunk_callback=None) -> Dict[str, Any]:
+        """Fetch large file in chunks using Range requests.
+
+        When chunk_callback is provided it is called as callback(data, offset)
+        for every chunk and the data is NOT accumulated — keeps memory flat
+        regardless of file size.  Without a callback the full content is
+        assembled in memory and returned as 'content'.
+        """
         try:
-            chunks = []
+            chunks = [] if chunk_callback is None else None
             offset = 0
             resp_headers = None
             mimetype = None
             status_code = 0
+            chunk_count = 0
 
             while offset < content_length:
                 end = min(offset + chunk_size - 1, content_length - 1)
@@ -1350,8 +1366,8 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
                 chunk_headers = headers.copy() if headers else {}
                 chunk_headers['Range'] = 'bytes={}-{}'.format(offset, end)
 
-                self.log.info("Fetching chunk: bytes {}-{} of {}, headers={}".format(
-                    offset, end, content_length, chunk_headers))
+                self.log.info("Fetching chunk: bytes {}-{} of {} ({:.1f}%)".format(
+                    offset, end, content_length, offset / content_length * 100))
 
                 # Fetch this chunk
                 chunk_result = self._xhr_fetch_single(url, chunk_headers, None, None)
@@ -1368,15 +1384,31 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
                     mimetype = chunk_result.get('mimetype')
                     status_code = chunk_result.get('code')
 
-                # Append chunk data
                 chunk_content = chunk_result.get('content', b'')
-                chunks.append(chunk_content)
-
-                offset += len(chunk_content)
-
-                # Safety check
                 if len(chunk_content) == 0:
                     break
+
+                if chunk_callback is not None:
+                    chunk_callback(chunk_content, offset)
+                else:
+                    chunks.append(chunk_content)
+
+                offset += len(chunk_content)
+                chunk_count += 1
+
+            if chunk_callback is not None:
+                self.log.info("Processed {} bytes in {} chunks via callback".format(offset, chunk_count))
+                return {
+                    'url': url,
+                    'headers': headers,
+                    'resp_headers': resp_headers,
+                    'post': None,
+                    'mimetype': mimetype,
+                    'code': status_code,
+                    'chunked': True,
+                    'chunks': chunk_count,
+                    'size': offset,
+                }
 
             # Combine all chunks
             full_content = b''.join(chunks)
@@ -1397,7 +1429,7 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
                 'mimetype': mimetype,
                 'code': status_code,
                 'chunked': True,
-                'chunks': len(chunks)
+                'chunks': chunk_count
             }
 
         except Exception as e:

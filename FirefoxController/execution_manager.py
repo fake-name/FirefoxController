@@ -418,9 +418,46 @@ user_pref("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", false);
 
         raise FirefoxStartupException("Firefox binary not found: {}".format(self.binary))
 
+    # Minimum Firefox version (network.addDataCollector added in 143)
+    MINIMUM_FIREFOX_VERSION = 143
+
+    def _get_firefox_version(self, firefox_path: str) -> Optional[int]:
+        """
+        Get the major version number of the Firefox binary.
+
+        Args:
+            firefox_path: Path to the Firefox binary
+
+        Returns:
+            Major version as int, or None if version could not be determined
+        """
+        try:
+            result = subprocess.run(
+                [firefox_path, "--version"],
+                capture_output=True, text=True, timeout=10
+            )
+            # Output format: "Mozilla Firefox 148.0" or "Mozilla Firefox 140.7.1esr"
+            match = re.search(r'Mozilla Firefox (\d+)\.', result.stdout)
+            if match:
+                return int(match.group(1))
+        except Exception as e:
+            self.log.debug("Could not determine Firefox version: {}".format(e))
+        return None
+
     def start_firefox(self):
         """Start Firefox with remote debugging enabled"""
         firefox_path = self._find_firefox_binary()
+
+        # Check Firefox version
+        version = self._get_firefox_version(firefox_path)
+        if version is not None:
+            self.log.info("Detected Firefox version: {}".format(version))
+            if version < self.MINIMUM_FIREFOX_VERSION:
+                raise FirefoxStartupException(
+                    "Firefox {} is too old. Minimum supported version is {}. "
+                    "Please update Firefox.".format(version, self.MINIMUM_FIREFOX_VERSION))
+        else:
+            self.log.warning("Could not determine Firefox version. Proceeding anyway.")
 
         # Create profile if needed
         profile_path = self._create_profile()
@@ -465,6 +502,9 @@ user_pref("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", false);
 
             self.process = subprocess.Popen(cmd, **popen_kwargs)
 
+            if IS_WINDOWS:
+                self._assign_to_job_object()
+
             # Give Firefox more time to start
             time.sleep(4)
 
@@ -490,6 +530,113 @@ user_pref("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", false);
             libc.prctl(PR_SET_PDEATHSIG, signal.SIGTERM)
         except Exception:
             pass  # Not critical if this fails
+
+    def _assign_to_job_object(self):
+        """Assign Firefox to a Job Object so it dies when the parent process exits (Windows only).
+
+        This is the Windows equivalent of Linux's prctl(PR_SET_PDEATHSIG).
+        When the parent process exits (even via crash/kill), all handles are closed,
+        which causes the job object to terminate all child processes.
+        """
+        if not self.process or not isinstance(self.process.pid, int):
+            return
+
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+
+            # Job object constants
+            JobObjectExtendedLimitInformation = 9
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+            PROCESS_SET_QUOTA = 0x0100
+            PROCESS_TERMINATE = 0x0001
+
+            class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+                _fields_ = [
+                    ('PerProcessUserTimeLimit', ctypes.c_int64),
+                    ('PerJobUserTimeLimit', ctypes.c_int64),
+                    ('LimitFlags', wintypes.DWORD),
+                    ('MinimumWorkingSetSize', ctypes.c_size_t),
+                    ('MaximumWorkingSetSize', ctypes.c_size_t),
+                    ('ActiveProcessLimit', wintypes.DWORD),
+                    ('Affinity', ctypes.POINTER(ctypes.c_ulong)),
+                    ('PriorityClass', wintypes.DWORD),
+                    ('SchedulingClass', wintypes.DWORD),
+                ]
+
+            class IO_COUNTERS(ctypes.Structure):
+                _fields_ = [
+                    ('ReadOperationCount', ctypes.c_uint64),
+                    ('WriteOperationCount', ctypes.c_uint64),
+                    ('OtherOperationCount', ctypes.c_uint64),
+                    ('ReadTransferCount', ctypes.c_uint64),
+                    ('WriteTransferCount', ctypes.c_uint64),
+                    ('OtherTransferCount', ctypes.c_uint64),
+                ]
+
+            class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+                _fields_ = [
+                    ('BasicLimitInformation', JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                    ('IoInfo', IO_COUNTERS),
+                    ('ProcessMemoryLimit', ctypes.c_size_t),
+                    ('JobMemoryLimit', ctypes.c_size_t),
+                    ('PeakProcessMemoryUsed', ctypes.c_size_t),
+                    ('PeakJobMemoryUsed', ctypes.c_size_t),
+                ]
+
+            # Create an anonymous job object
+            job = kernel32.CreateJobObjectW(None, None)
+            if not job:
+                self.log.debug("Failed to create job object: error {}".format(
+                    ctypes.get_last_error()))
+                return
+
+            # Configure job to kill children when job handle is closed
+            info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+
+            if not kernel32.SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                ctypes.byref(info),
+                ctypes.sizeof(info)
+            ):
+                self.log.debug("Failed to set job object info: error {}".format(
+                    ctypes.get_last_error()))
+                kernel32.CloseHandle(job)
+                return
+
+            # Assign Firefox process to the job
+            process_handle = kernel32.OpenProcess(
+                PROCESS_SET_QUOTA | PROCESS_TERMINATE,
+                False,
+                self.process.pid
+            )
+            if not process_handle:
+                self.log.debug("Failed to open Firefox process: error {}".format(
+                    ctypes.get_last_error()))
+                kernel32.CloseHandle(job)
+                return
+
+            if not kernel32.AssignProcessToJobObject(job, process_handle):
+                self.log.debug("Failed to assign process to job: error {}".format(
+                    ctypes.get_last_error()))
+                kernel32.CloseHandle(process_handle)
+                kernel32.CloseHandle(job)
+                return
+
+            kernel32.CloseHandle(process_handle)
+
+            # Store the job handle so it stays alive as long as this manager lives.
+            # When this object is garbage-collected or the process exits, the handle
+            # is closed and Windows kills all processes in the job.
+            self._job_handle = job
+            self.log.debug("Assigned Firefox to job object (kill-on-close enabled)")
+
+        except Exception as e:
+            self.log.debug("Failed to set up job object: {}".format(e))
     
     def connect(self):
         """Connect to Firefox remote debugging interface using WebDriver BiDi"""
@@ -517,7 +664,7 @@ user_pref("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", false);
                 self.log.info("Connecting to WebDriver BiDi WebSocket (attempt {}/{}): {}".format(
                     attempt + 1, max_retries, ws_url))
 
-                self.ws_connection = connect(ws_url)
+                self.ws_connection = connect(ws_url, max_size=64 * 1024 * 1024)
 
                 # Initialize the WebDriver BiDi connection
                 self._initialize_bidi_connection()
@@ -1309,6 +1456,15 @@ user_pref("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", false);
                 self.log.debug("Cleaned up temporary profile: {}".format(self.temp_profile))
         except Exception:
             pass
+
+        # Close job object handle (Windows)
+        if hasattr(self, '_job_handle') and self._job_handle:
+            try:
+                import ctypes
+                ctypes.WinDLL('kernel32').CloseHandle(self._job_handle)
+            except Exception:
+                pass
+            self._job_handle = None
 
         # Clear all state
         self.ws_connection = None
