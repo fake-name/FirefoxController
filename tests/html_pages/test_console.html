@@ -1,0 +1,33 @@
+<html>
+<head>
+    <title>Console Test Page</title>
+    <script>
+        // Generate various console messages on page load
+        window.addEventListener('load', function() {
+            console.log('Page loaded - console.log message');
+            console.info('Info message from console.info');
+            console.debug('Debug message from console.debug');
+            console.warn('Warning message from console.warn');
+            console.error('Error message from console.error');
+
+            // Log with multiple arguments
+            console.log('Multiple', 'arguments', 'test', 123);
+
+            // Log an object
+            console.log('Object test:', {key: 'value', nested: {a: 1}});
+        });
+
+        // Function to trigger more console messages
+        function triggerConsoleMessages() {
+            console.log('Triggered console.log');
+            console.warn('Triggered console.warn');
+            console.error('Triggered console.error');
+        }
+    </script>
+</head>
+<body>
+    <h1>Console Test Page</h1>
+    <p>This page generates console messages on load.</p>
+    <button id="trigger-btn" onclick="triggerConsoleMessages()">Trigger More Messages</button>
+</body>
+</html>

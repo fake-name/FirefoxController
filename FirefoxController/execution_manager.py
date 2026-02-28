@@ -228,11 +228,19 @@ user_pref("privacy.clearOnShutdown.downloads", false);
 user_pref("privacy.clearOnShutdown.openWindows", false);
 
 // Disable clearing individual data types on shutdown (v2 preferences for newer Firefox)
+// These are the primary preferences used by modern Firefox versions
+user_pref("privacy.sanitize.sanitizeOnShutdown.v2", false);
 user_pref("privacy.clearOnShutdown_v2.cookiesAndStorage", false);
 user_pref("privacy.clearOnShutdown_v2.cache", false);
 user_pref("privacy.clearOnShutdown_v2.formdata", false);
 user_pref("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", false);
 user_pref("privacy.clearOnShutdown_v2.siteSettings", false);
+user_pref("privacy.clearOnShutdown_v2.downloads", false);
+user_pref("privacy.clearOnShutdown_v2.sessions", false);
+
+// Disable sanitization completely
+user_pref("privacy.sanitize.pending", "[]");
+user_pref("privacy.sanitize.timeSpan", 0);
 
 // Prevent Firefox from deleting cookies on shutdown (WebDriver-specific fix)
 user_pref("network.cookie.lifetimePolicy", 0);  // 0 = keep cookies until they expire
@@ -276,11 +284,15 @@ user_pref("browser.cache.memory.enable", true);  // Enable memory cache
             "privacy.clearOnShutdown.sessions": "false",
             "privacy.clearOnShutdown.formdata": "false",
             "privacy.clearOnShutdown.history": "false",
-            # Version 2 preferences (newer Firefox versions)
+            # Version 2 preferences (newer Firefox versions - these are the primary ones)
+            "privacy.sanitize.sanitizeOnShutdown.v2": "false",
             "privacy.clearOnShutdown_v2.cookiesAndStorage": "false",
             "privacy.clearOnShutdown_v2.cache": "false",
             "privacy.clearOnShutdown_v2.formdata": "false",
             "privacy.clearOnShutdown_v2.historyFormDataAndDownloads": "false",
+            "privacy.clearOnShutdown_v2.siteSettings": "false",
+            "privacy.clearOnShutdown_v2.downloads": "false",
+            "privacy.clearOnShutdown_v2.sessions": "false",
         }
 
         # Read existing prefs if file exists
