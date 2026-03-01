@@ -322,11 +322,13 @@ class WebDriverBiDiMixin:
             if expression.startswith('return '):
                 expression = expression[7:].strip()
 
-            # For multi-line scripts with return statements, we need a different approach
-            # Since WebDriver-BiDi script.evaluate can't handle return statements,
-            # we'll try to wrap the script in a function and call it immediately
-            if 'return ' in expression and '\n' in expression:
-                # This is a multi-line script with return statements
+            # For multi-line scripts with bare return statements, we need to wrap
+            # them in a function. But skip wrapping if the expression already starts
+            # with '(' — it's already a valid expression (e.g. an IIFE like
+            # (async function() { ... return ...; })() ) and any 'return' inside
+            # is scoped to an inner function, not a bare return.
+            if 'return ' in expression and '\n' in expression and not expression.startswith('('):
+                # This is a multi-line script with bare return statements
                 # Wrap it in an immediately-invoked function expression
                 expression = '(function() {' + expression + '})()'
 
@@ -340,10 +342,6 @@ class WebDriverBiDiMixin:
                 # Wrap in parentheses to force object literal interpretation
                 expression = '(' + expression + ')'
 
-            # Also fix the colon syntax issue
-            expression = expression.replace('title:', 'title:')
-            expression = expression.replace('url:', 'url:')
-            expression = expression.replace('elementCount:', 'elementCount:')
 
             params = {
                 'expression': expression,

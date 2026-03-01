@@ -231,18 +231,19 @@ class FirefoxRemoteDebugInterface(WebDriverBiDiMixin):
             self.log.warning("Failed to execute JavaScript: {}".format(e))
             return None
     
-    def execute_javascript_statement(self, script: str, timeout: int = None) -> Any:
+    def execute_javascript_statement(self, script: str, await_promise: bool = False, timeout: int = None) -> Any:
         """
         Execute a JavaScript statement in the browser context.
 
         Args:
             script: JavaScript code to execute
+            await_promise: Whether to await promise resolution (needed for async scripts)
             timeout: Timeout in seconds (uses default_timeout if None)
 
         Returns:
             Result of JavaScript execution
         """
-        return self.__exec_js(script, should_call=False, timeout=timeout)
+        return self.__exec_js(script, should_call=False, await_promise=await_promise, timeout=timeout)
 
     def execute_javascript_function(self, script: str, args: list = None, timeout: int = None) -> Any:
         """

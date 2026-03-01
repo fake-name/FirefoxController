@@ -350,7 +350,7 @@ class TestConnectRetryLogic:
 
         call_count = [0]
 
-        def mock_connect(url):
+        def mock_connect(url, **kwargs):
             call_count[0] += 1
             raise ConnectionRefusedError("Connection refused")
 
@@ -371,7 +371,7 @@ class TestConnectRetryLogic:
         call_count = [0]
         mock_ws = mock.Mock()
 
-        def mock_connect_fn(url):
+        def mock_connect_fn(url, **kwargs):
             call_count[0] += 1
             if call_count[0] < 2:
                 raise ConnectionRefusedError("Connection refused")

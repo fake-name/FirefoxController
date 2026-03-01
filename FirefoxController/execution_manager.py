@@ -1454,15 +1454,8 @@ user_pref("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", false);
                     except Exception:
                         pass
 
-        # Clean up temporary profile
-        try:
-            if self.temp_profile and os.path.exists(self.temp_profile):
-                shutil.rmtree(self.temp_profile)
-                self.log.debug("Cleaned up temporary profile: {}".format(self.temp_profile))
-        except Exception:
-            pass
-
-        # Close job object handle (Windows)
+        # Close job object handle (Windows) FIRST — this kills all Firefox
+        # child processes (content, GPU, etc.) that may still hold file locks.
         if hasattr(self, '_job_handle') and self._job_handle:
             try:
                 import ctypes
@@ -1470,6 +1463,37 @@ user_pref("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", false);
             except Exception:
                 pass
             self._job_handle = None
+
+        # Clean up Firefox profile lock file.
+        # Firefox creates a 'parent.lock' file in the profile directory.
+        # On Linux this is a symlink that gets cleaned up automatically, but
+        # on Windows it's a regular file. When Firefox is killed forcefully
+        # (e.g. via TerminateProcess), it doesn't get a chance to remove it.
+        # A stale lock file prevents subsequent Firefox instances from using
+        # the same profile.
+        # We retry a few times because child processes may take a moment to
+        # release their file handles after the job object is closed.
+        if self.profile_dir:
+            lock_file = os.path.join(self.profile_dir, "parent.lock")
+            for attempt in range(5):
+                try:
+                    if os.path.exists(lock_file):
+                        os.remove(lock_file)
+                        self.log.debug("Removed stale profile lock: {}".format(lock_file))
+                    break
+                except OSError:
+                    if attempt < 4:
+                        time.sleep(0.5)
+                    else:
+                        self.log.warning("Could not remove profile lock {} after retries".format(lock_file))
+
+        # Clean up temporary profile
+        try:
+            if self.temp_profile and os.path.exists(self.temp_profile):
+                shutil.rmtree(self.temp_profile)
+                self.log.debug("Cleaned up temporary profile: {}".format(self.temp_profile))
+        except Exception:
+            pass
 
         # Clear all state
         self.ws_connection = None
@@ -1480,6 +1504,17 @@ user_pref("privacy.clearOnShutdown_v2.historyFormDataAndDownloads", false);
         self.user_context = None
         self.temp_profile = None
     
+    def __del__(self):
+        """Safety net: clean up profile lock if close() was never called."""
+        profile_dir = getattr(self, 'profile_dir', None)
+        if profile_dir:
+            lock_file = os.path.join(profile_dir, "parent.lock")
+            try:
+                if os.path.exists(lock_file):
+                    os.remove(lock_file)
+            except Exception:
+                pass
+
     def __enter__(self):
         """Context manager entry"""
         self.start_firefox()
